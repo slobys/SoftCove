@@ -1,0 +1,25 @@
+services:
+  softcove:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      PORT: "3100"
+      DATA_DIR: /app/data
+    ports:
+      - "127.0.0.1:3100:3100"
+    volumes:
+      - softcove_storage:/app/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 100
+    cap_drop:
+      - ALL
+
+volumes:
+  softcove_storage:

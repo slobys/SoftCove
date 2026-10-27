@@ -1,0 +1,17 @@
+{
+  "name": "softcove-marketplace",
+  "version": "0.2.0-beta.1",
+  "private": true,
+  "type": "module",
+  "description": "软湾 SoftCove — multi-vendor software marketplace MVP",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "dev": "node --watch server.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "check": "node --check server.mjs && node --check src/db.mjs && node --check src/security.mjs && node --check src/scanner.mjs && node --check public/app.js",
+    "admin:create": "node scripts/create-admin.mjs"
+  }
+}

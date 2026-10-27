@@ -1,0 +1,18 @@
+PORT=3100
+PUBLIC_BASE_URL=http://localhost:3100
+DATA_DIR=./data
+APP_CURRENCY=CNY
+PLATFORM_FEE_BPS=1500
+# Paid checkout is disabled until both values are supplied.
+STRIPE_SECRET_KEY=
+STRIPE_WEBHOOK_SECRET=
+# Optional ClamAV scanner. DISABLED by default; scanner executable and signatures
+# MUST be installed and kept updated on the actual server/container when enabled.
+# When enabled but missing/erroring, upload stays quarantined and cannot publish.
+CLAMAV_ENABLED=0
+CLAMAV_COMMAND=clamscan
+
+# Provide these only when running npm run admin:create.
+ADMIN_EMAIL=
+ADMIN_PASSWORD=
+ADMIN_NAME=平台管理员
