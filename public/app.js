@@ -26,6 +26,10 @@ function statusPill(status, refundedMinor = 0) {
   if (status === 'paid' && refundedMinor > 0) return '<span class="status status-partial">部分退款 ' + money(refundedMinor) + '</span>';
   return '<span class="status status-' + esc(status) + '">' + esc(labels[status] || status) + '</span>';
 }
+function orderStatus(order) {
+  if (order.payment_provider === 'demo') return '<span class="status status-free">' + (order.status === 'paid' ? '模拟完成 · 未收款' : '演示订单 · 待模拟') + '</span>';
+  return statusPill(order.status, order.refunded_minor);
+}
 function chipPlatform(name) { return '<span class="platform-tag">' + esc(name) + '</span>'; }
 function toast(text, bad = false) {
   const box = document.createElement('div');
@@ -89,10 +93,10 @@ function footer() {
   return '<footer class="footer"><div class="container"><div class="footer-inner"><div>' +
     '<a href="#/" class="brand"><span class="brand-symbol"><span class="brand-mark">≈</span></span><span><span class="brand-name">SoftCove</span><span class="brand-sub" style="display:block">好软件，自有好去处</span></span></a>' +
     '<p>连接独立开发者与热爱软件的人。</p></div><div class="footer-links"><a href="#/">发现软件</a><a href="#/explore">全部应用</a><a href="#/auth?role=seller">开发者入驻</a><a href="#/library">我的软件库</a></div></div>' +
-    '<div class="footer-note">© SoftCove · 独立开发者软件市集 MVP。展示样品为虚构产品，不可购买。平台仅在收到可信支付确认后交付付费商品；开发者款项不自动结算。</div>' +
+    '<div class="footer-note">© SoftCove · 独立开发者软件市集 MVP。' + (state.config.demoCheckout ? '当前为模拟交易演示，不收取真实款项；请只使用测试资料。' : '展示样品为虚构产品，不可购买。平台仅在收到可信支付确认后交付付费商品；开发者款项不自动结算。') + '</div>' +
     '</div></footer>';
 }
-function shell(body) { app.innerHTML = '<div class="site-shell">' + nav() + '<main>' + body + '</main>' + footer() + '</div>'; }
+function shell(body) { app.innerHTML = '<div class="site-shell">' + nav() + (state.config.demoCheckout ? '<div class="demo-site-notice" role="status">演示站点：付费订单仅作模拟，不会实际扣款。请只使用测试账号和测试安装包。</div>' : '') + '<main>' + body + '</main>' + footer() + '</div>'; }
 
 function art(p, large = false) {
   return '<div class="' + (large ? 'detail-cover' : 'app-art') + '" style="--accent:' + esc(p.accent) + '">' +
@@ -156,15 +160,16 @@ function productPage(p) {
     cta = '<button class="btn btn-primary btn-block btn-lg" disabled>展示样品 · 暂不开放购买</button>';
     message = '这是设计示例，并非真实售卖商品。不会收取任何费用。';
   } else if (p.has_access) {
-    cta = '<a class="btn btn-primary btn-block btn-lg" href="/api/my/library/' + encodeURIComponent(p.id) + '/download">下载已购买软件 ↓</a>';
-    message = '你已拥有这个软件，可以随时从软件库再次下载。';
+    cta = '<a class="btn btn-primary btn-block btn-lg" href="/api/my/library/' + encodeURIComponent(p.id) + '/download">' + (state.config.demoCheckout ? '下载测试软件 ↓' : '下载已购买软件 ↓') + '</a>';
+    message = state.config.demoCheckout ? '这是演示下载授权，未产生实际付款。' : '你已拥有这个软件，可以随时从软件库再次下载。';
   } else if (!state.me) {
     cta = '<a class="btn btn-primary btn-block btn-lg" href="#/auth">登录后' + (isFree ? '免费领取' : '购买软件') + ' ↗</a>';
-  } else if (!isFree && !state.config.paymentConfigured) {
+  } else if (!isFree && !state.config.paymentConfigured && !state.config.demoCheckout) {
     cta = '<button class="btn btn-primary btn-block btn-lg" disabled>付费通道尚未开放</button>';
     message = '尚未配置 Stripe 正式支付，当前不能购买付费软件。';
   } else {
-    cta = '<button class="btn btn-primary btn-block btn-lg" data-action="buy" data-id="' + esc(p.id) + '">' + (isFree ? '免费领取 ↗' : '安全支付并获取软件 ↗') + '</button>';
+    cta = '<button class="btn btn-primary btn-block btn-lg" data-action="buy" data-id="' + esc(p.id) + '">' + (isFree ? '免费领取 ↗' : state.config.demoCheckout ? '演示下单 · 不扣款' : '安全支付并获取软件 ↗') + '</button>';
+    if (!isFree && state.config.demoCheckout) message = '创建演示订单后，在软件库确认模拟付款。没有实际资金交易，完成后获得测试下载权限。';
   }
   return '<section class="page-head"><div class="container"><div class="breadcrumb"><a href="#/">首页</a><span> / </span><a href="#/explore">全部应用</a><span> / </span><span>' + esc(p.name) + '</span></div><h1>发现好软件</h1><p>用值得信赖的方式，支持优秀开发者。</p></div></section>' +
     '<div class="container page-section"><div class="detail-wrap"><article class="detail-main">' +
@@ -246,7 +251,7 @@ function sellerPage(data) {
       empty('✧','你的第一个作品从这里开始','发布产品介绍、上传软件安装包，然后提交平台人工审核。','<a class="btn btn-primary" href="#/seller/new">＋ 开始发布</a>')) +
     '</div><div class="panel"><h3>最近订单</h3>' +
     (data.orders.length ? '<div class="table-scroller"><table class="data-table"><thead><tr><th>产品</th><th>支付金额</th><th>应得金额</th><th>状态</th><th>日期</th></tr></thead><tbody>' +
-    data.orders.map(o => '<tr><td><strong>' + esc(o.product_name) + '</strong></td><td>' + money(o.amount_minor,o.currency) + '</td><td>' + money(o.seller_due_minor,o.currency) + '</td><td>' + statusPill(o.status,o.refunded_minor) + '</td><td>' + fmtDate(o.paid_at || o.created_at) + '</td></tr>').join('') +
+    data.orders.map(o => '<tr><td><strong>' + esc(o.product_name) + '</strong></td><td>' + money(o.amount_minor,o.currency) + '</td><td>' + money(o.seller_due_minor,o.currency) + '</td><td>' + orderStatus(o) + '</td><td>' + fmtDate(o.paid_at || o.created_at) + '</td></tr>').join('') +
     '</tbody></table></div>' : '<p class="section-note">暂无实际订单。你的软件审核上架后，交易记录会出现在这里。</p>') +
     '</div>' + sellerSettlementPanel(data) + '</div></div></section>';
 }
@@ -298,6 +303,15 @@ function adminSellerPanels(data) {
         settlements.map(s => '<tr><td>' + esc(s.seller_name) + '</td><td><strong>' + money(s.amount_minor,s.currency) + '</strong></td><td>' + esc(s.external_reference) + '</td><td>' + fmtDate(s.created_at) + '</td></tr>').join('') +
         '</tbody></table></div>' : '<p class="section-note">尚未登记任何外部支付凭证。</p>') + '</div>';
 }
+function deploymentPanel(deployment) {
+  if (!deployment) return '';
+  const labels = { configured: '已配置，待验证', complete: '已完成', pending: '待准备', manual: '需人工核验' };
+  return '<section class="panel deployment-panel" aria-labelledby="deployment-heading"><h3 id="deployment-heading">开店准备</h3>' +
+    '<p class="panel-sub">' + esc(deployment.notice) + '</p>' +
+    '<dl class="deployment-checks">' + deployment.checks.map(check =>
+      '<div class="deployment-check"><dt>' + esc(check.title) + '<span class="deployment-state deployment-state-' + esc(check.status) + '">' + esc(labels[check.status]) + '</span></dt><dd>' + esc(check.detail) + '</dd></div>'
+    ).join('') + '</dl><p class="deployment-address">站点地址：<a href="' + esc(deployment.baseUrl) + '">' + esc(deployment.baseUrl) + '</a></p></section>';
+}
 function adminPage(data) {
   const stats = data.stats;
   const queue = data.products.filter(p => p.status === 'pending');
@@ -314,7 +328,7 @@ function adminPage(data) {
     '<div class="stat-grid"><div class="stat-card"><div class="stat-label">入驻开发者 <span class="stat-symbol">♧</span></div><div class="stat-value">' + stats.sellers + '</div><div class="stat-foot">不包含演示账号</div></div>' +
     '<div class="stat-card"><div class="stat-label">待审商品 <span class="stat-symbol">⌛</span></div><div class="stat-value">' + stats.pending + '</div><div class="stat-foot">需要人工安全检查</div></div>' +
     '<div class="stat-card"><div class="stat-label">已记录平台佣金 <span class="stat-symbol">¥</span></div><div class="stat-value">' + money(stats.fees_minor) + '</div><div class="stat-foot">未扣税与退款 · 非实际结算</div></div></div>' +
-    adminSellerPanels(data) +
+    deploymentPanel(data.deployment) + adminSellerPanels(data) +
     '<div class="notice danger" style="margin-bottom:19px"><strong>审核提醒：</strong>安装包默认隔离，ClamAV 为可选自动扫描且可能漏报。人工需另行核验软件签名、版权与运行行为，不能仅凭自动扫描就直接上架。</div>' +
     '<div class="panel"><h3>待审核软件 (' + queue.length + ')</h3>' +
     (queue.length ? '<div class="table-scroller"><table class="data-table"><thead><tr><th>软件信息</th><th>定价</th><th>文件</th><th>状态</th><th>审核操作</th></tr></thead><tbody>' + rows + '</tbody></table></div>' :
@@ -323,9 +337,9 @@ function adminPage(data) {
     (liveProducts.length ? '<div class="table-scroller"><table class="data-table"><thead><tr><th>软件名称</th><th>开发者</th><th>价格</th><th>状态</th><th>操作</th></tr></thead><tbody>' +
       liveProducts.map(p => '<tr><td><strong>' + esc(p.name) + '</strong></td><td>' + esc(p.seller_name) + '</td><td>' + money(p.price_minor,p.currency) + '</td><td>' + statusPill(p.status) + '</td><td><button class="btn btn-danger btn-sm" data-action="takedown" data-id="' + esc(p.id) + '">紧急下架</button></td></tr>').join('') +
       '</tbody></table></div>' : '<p class="section-note">暂无真实上架商品。</p>') + '</div>' +
-    '<div class="panel"><h3>最近订单</h3><p class="panel-sub">订单快照以数据库为准；只有 Stripe 验签事件可把付费订单标记为成功。</p>' +
+    '<div class="panel"><h3>最近订单</h3><p class="panel-sub">演示订单始终标记为模拟，不计入收入与结算。真实付费订单需由 Stripe 验签确认。</p>' +
     (data.orders.length ? '<div class="table-scroller"><table class="data-table"><thead><tr><th>商品</th><th>买家</th><th>金额</th><th>平台佣金</th><th>状态</th><th>时间</th></tr></thead><tbody>' +
-    data.orders.map(o => '<tr><td><strong>' + esc(o.product_name) + '</strong><div class="muted">' + esc(o.seller_name) + '</div></td><td>' + esc(o.buyer_email) + '</td><td>' + money(o.amount_minor,o.currency) + '</td><td>' + money(o.platform_fee_minor,o.currency) + '</td><td>' + statusPill(o.status,o.refunded_minor) + '</td><td>' + fmtDate(o.created_at) + '</td></tr>').join('') +
+    data.orders.map(o => '<tr><td><strong>' + esc(o.product_name) + '</strong><div class="muted">' + esc(o.seller_name) + '</div></td><td>' + esc(o.buyer_email) + '</td><td>' + money(o.amount_minor,o.currency) + '</td><td>' + money(o.platform_fee_minor,o.currency) + '</td><td>' + orderStatus(o) + '</td><td>' + fmtDate(o.created_at) + '</td></tr>').join('') +
     '</tbody></table></div>' : '<p class="section-note">暂无交易订单。</p>') + '</div>' +
     '</div></div></section>';
 }
@@ -334,8 +348,9 @@ function libraryPage(data) {
   const orders = data.orders || [];
   const query = location.hash.split('?')[1] || '';
   const paymentNote = query.includes('payment=success') ? '<div class="notice warning" style="margin-bottom:20px">支付页面已返回。请以 Stripe 的服务端支付通知为准；只有收到验证通过的付款通知，软件才会自动出现在下方。若尚未出现，请稍后刷新。</div>' : '';
+  const demoNote = state.config.demoCheckout ? '<div class="notice warning" style="margin-bottom:20px">演示结账：核对下方订单的软件和标价，点击“确认模拟付款”完成测试。不会实际扣款；模拟订单不产生收入、佣金或可提现余额。</div>' : '';
   return title('我的软件库','所有已获得授权的软件，都安全保存在这里。') +
-    '<section class="container page-section">' + paymentNote +
+    '<section class="container page-section">' + paymentNote + demoNote +
     (products.length ? '<div class="library-list">' + products.map(p => '<div class="library-item">' +
       '<div class="app-icon" style="--accent:' + esc(p.accent) + '">' + esc(p.icon) + '</div>' +
       '<div class="library-info"><h3>' + esc(p.name) + ' <span class="muted">v' + esc(p.version) + '</span></h3><p>获取时间：' + fmtDate(p.acquired_at) + ' · ' + esc(p.platforms.join(' / ')) + '</p></div>' +
@@ -344,7 +359,7 @@ function libraryPage(data) {
       empty('◈','你的软件库还是空的','探索精选作品，免费领取或购买后，你拥有的正式软件会显示在这里。','<a class="btn btn-primary" href="#/explore">探索软件 ↗</a>')) +
     '<div class="panel" style="margin-top:24px"><h3>订单记录</h3>' +
     (orders.length ? '<div class="table-scroller"><table class="data-table"><thead><tr><th>软件</th><th>金额</th><th>状态</th><th>创建时间</th></tr></thead><tbody>' +
-    orders.map(o => '<tr><td><strong>' + esc(o.product_name) + '</strong></td><td>' + money(o.amount_minor,o.currency) + '</td><td>' + statusPill(o.status,o.refunded_minor) + '</td><td>' + fmtDate(o.created_at) + '</td></tr>').join('') + '</tbody></table></div>' :
+    orders.map(o => '<tr><td><strong>' + esc(o.product_name) + '</strong></td><td>' + money(o.amount_minor,o.currency) + '</td><td>' + orderStatus(o) + (o.payment_provider === 'demo' && o.status === 'pending' && state.config.demoCheckout ? '<button class="btn btn-light btn-sm" data-action="demo-complete" data-id="' + esc(o.id) + '">确认模拟付款 · 不扣款</button>' : '') + '</td><td>' + fmtDate(o.created_at) + '</td></tr>').join('') + '</tbody></table></div>' :
     '<p class="section-note">暂无订单。</p>') + '</div></section>';
 }
 function authPage() {
@@ -456,8 +471,17 @@ document.addEventListener('click', async event => {
     try {
       const order = await api('/api/orders','POST',{productId:element.dataset.id});
       if (order.library) { toast('领取成功，已加入我的软件库'); location.hash = '#/library'; await render(); }
+      else if (order.demoCheckout) { location.hash = '#/library?payment=demo'; await render(); }
       else if (order.checkoutUrl) location.assign(order.checkoutUrl);
     } catch(error) { toast(error.message,true); element.disabled = false; }
+  }
+  if (action === 'demo-complete') {
+    element.disabled = true;
+    try {
+      await api('/api/orders/' + encodeURIComponent(element.dataset.id) + '/demo-complete', 'POST', {});
+      toast('模拟交易完成，未实际扣款。已获得测试下载权限。');
+      await render();
+    } catch (error) { element.disabled = false; toast(error.message, true); }
   }
   if (['seller-approve','seller-reject','seller-suspend'].includes(action)) {
     const decision = action.split('-')[1] === 'suspend' ? 'suspend' : action.split('-')[1];

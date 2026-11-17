@@ -1,4 +1,5 @@
 import { randomBytes, scryptSync, createHash, timingSafeEqual } from 'node:crypto';
+import { isIP } from 'node:net';
 
 export class HttpError extends Error {
   constructor(status, message) {
@@ -129,10 +130,14 @@ export function safeFilename(input) {
   return base;
 }
 
-export function createRateLimiter() {
+export function createRateLimiter({ trustProxy = false } = {}) {
   const records = new Map();
   return function limit(req, group, max, ms) {
-    const ip = req.socket.remoteAddress || 'unknown';
+    // Enable only behind the controlled proxy, which REPLACES this header.
+    // Chains and malformed values are ignored instead of trusting caller input.
+    const forwarded = req.headers['x-forwarded-for'];
+    const ip = trustProxy && typeof forwarded === 'string' && isIP(forwarded.trim())
+      ? forwarded.trim() : req.socket.remoteAddress || 'unknown';
     const key = group + ':' + ip;
     const now = Date.now();
     if (records.size > 8000) {

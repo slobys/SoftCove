@@ -1,0 +1,32 @@
+services:
+  softcove:
+    environment:
+      TRUST_PROXY: "1"
+      ENABLE_DEMO_CATALOG: "0"
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      SOFTCOVE_DOMAIN: ${SOFTCOVE_DOMAIN:?请通过 bash deploy.sh 配置域名}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      softcove:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  caddy_data:
+  caddy_config:

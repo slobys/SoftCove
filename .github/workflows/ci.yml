@@ -1,7 +1,7 @@
 name: SoftCove Tests
 on:
   push:
-    branches: [main]
+    branches: [main, 'codex/**']
   pull_request:
     branches: [main]
 permissions:
@@ -18,5 +18,19 @@ jobs:
         run: npm run check
       - name: Integration tests
         run: npm test
-      - name: Docker image build
-        run: docker build -t softcove:ci .
+      - name: Shell syntax
+        run: |
+          for script in deploy.sh scripts/compose-lib.sh scripts/ops.sh tests/deploy-script-smoke.sh; do
+            bash -n "$script"
+          done
+      - name: Production Compose configuration
+        env:
+          SOFTCOVE_ENV_FILE: config.example
+          SOFTCOVE_DOMAIN: shop.example.com
+        run: docker compose --env-file config.example -f compose.yaml -f compose.production.yaml config --quiet
+      - name: Caddy configuration
+        run: docker run --rm -v "$PWD/deploy/Caddyfile:/etc/caddy/Caddyfile:ro" -e SOFTCOVE_DOMAIN=shop.example.com caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+      - name: Docker marketplace and recovery acceptance
+        run: npm run test:docker
+      - name: One-command deployment acceptance
+        run: bash tests/deploy-script-smoke.sh

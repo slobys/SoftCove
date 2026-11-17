@@ -22,7 +22,7 @@ export function withTransaction(db, operation) {
   }
 }
 
-export function openDatabase(dataDir) {
+export function openDatabase(dataDir, { seedDemo = true } = {}) {
   mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   const db = new DatabaseSync(path.join(dataDir, 'marketplace.db'));
   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
@@ -50,6 +50,7 @@ export function openDatabase(dataDir) {
   if (!orderColumns.has('payment_intent_id')) db.exec('ALTER TABLE orders ADD COLUMN payment_intent_id TEXT');
   if (!orderColumns.has('refunded_minor')) db.exec('ALTER TABLE orders ADD COLUMN refunded_minor INTEGER NOT NULL DEFAULT 0');
   if (!orderColumns.has('refunded_at')) db.exec('ALTER TABLE orders ADD COLUMN refunded_at TEXT');
+  if (!orderColumns.has('payment_provider')) db.exec("ALTER TABLE orders ADD COLUMN payment_provider TEXT NOT NULL DEFAULT 'stripe'");
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_payment_intent ON orders(payment_intent_id)');
 
   const userColumns = new Set(db.prepare('PRAGMA table_info(users)').all().map(c => c.name));
@@ -65,7 +66,7 @@ export function openDatabase(dataDir) {
   db.exec("UPDATE users SET seller_status='pending' WHERE role='seller' AND seller_status='none' AND id!='softcove-demo-studio'");
   db.exec("UPDATE users SET seller_status='approved' WHERE id='softcove-demo-studio'");
 
-  seedCatalog(db);
+  if (seedDemo) seedCatalog(db);
   return db;
 }
 

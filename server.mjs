@@ -8,6 +8,8 @@ import { createHash, createHmac, timingSafeEqual, randomUUID } from 'node:crypto
 import { openDatabase, withTransaction, uid, CATEGORIES, PLATFORMS } from './src/db.mjs';
 import { HttpError, fail, hashPassword, verifyPassword, getAuth, publicUser, createSession, clearSession, requireAuth, checkSameOrigin, checkMutation, readBody, readJSON, safeEmail, safeText, safeFilename, createRateLimiter, json } from './src/security.mjs';
 import { scanPackage } from './src/scanner.mjs';
+import { loadConfig, loadEnvironment } from './src/config.mjs';
+import { deploymentReadiness } from './src/readiness.mjs';
 
 const projectDir = path.dirname(fileURLToPath(import.meta.url));
 const staticFiles = {
@@ -71,8 +73,8 @@ function sellerProduct(p) {
     reviewed_at: p.reviewed_at, updated_at: p.updated_at };
 }
 
-function selectPublicProduct(db, id) {
-  return db.prepare("SELECT p.*,u.name AS seller_name FROM products p JOIN users u ON p.seller_id=u.id WHERE p.id=? AND p.status='published' AND (p.is_demo=1 OR u.seller_status='approved')").get(id);
+function selectPublicProduct(db, id, showDemo) {
+  return db.prepare("SELECT p.*,u.name AS seller_name FROM products p JOIN users u ON p.seller_id=u.id WHERE p.id=? AND p.status='published' AND (p.is_demo=1 OR u.seller_status='approved') AND (p.is_demo=0 OR ?=1)").get(id, Number(showDemo));
 }
 
 function requireSellerProduct(db, auth, id) {
@@ -123,7 +125,7 @@ function stripeSessionSucceeded(db, event, feeBps, isLiveKey) {
   withTransaction(db, () => {
     if (db.prepare('SELECT id FROM webhook_events WHERE id=?').get(event.id)) return;
     const order = db.prepare('SELECT * FROM orders WHERE id=?').get(orderId);
-    if (!order || order.checkout_session_id !== session.id) return;
+    if (!order || order.payment_provider !== 'stripe' || order.checkout_session_id !== session.id) return;
     if (String(session.currency || '').toUpperCase() !== order.currency) return;
     if (event.type === 'checkout.session.expired' && order.status === 'pending') {
       db.prepare("UPDATE orders SET status='expired' WHERE id=?").run(order.id);
@@ -252,7 +254,7 @@ function summaryNumber(db, sql, args = []) {
 }
 
 function sellerBalance(db, sellerId) {
-  const earned = summaryNumber(db,"SELECT COALESCE(SUM(seller_due_minor),0) AS n FROM orders WHERE seller_id=? AND status IN ('paid','refunded')",[sellerId]);
+  const earned = summaryNumber(db,"SELECT COALESCE(SUM(seller_due_minor),0) AS n FROM orders WHERE seller_id=? AND status IN ('paid','refunded') AND payment_provider!='demo'",[sellerId]);
   const settled = summaryNumber(db,"SELECT COALESCE(SUM(amount_minor),0) AS n FROM manual_settlements WHERE seller_id=?",[sellerId]);
   return {
     earned_minor: earned, settled_minor: settled,
@@ -261,31 +263,21 @@ function sellerBalance(db, sellerId) {
   };
 }
 
-function loadConfig(opts = {}) {
-  const baseUrl = String(opts.baseUrl || process.env.PUBLIC_BASE_URL || 'http://localhost:' + (process.env.PORT || 3100)).replace(/\/+$/, '');
-  if (!/^https?:\/\/[^/]+$/i.test(baseUrl)) throw new Error('PUBLIC_BASE_URL 必须是一个有效站点域名，且不包含路径');
-  const currency = String(opts.currency || process.env.APP_CURRENCY || 'CNY').toUpperCase();
-  if (!['CNY', 'USD'].includes(currency)) throw new Error('仅支持 CNY 或 USD 单货币商店');
-  const feeBps = Number(opts.feeBps ?? process.env.PLATFORM_FEE_BPS ?? 1500);
-  if (!Number.isInteger(feeBps) || feeBps < 0 || feeBps > 10000) throw new Error('PLATFORM_FEE_BPS 无效');
-  return {
-    dataDir: path.resolve(opts.dataDir || process.env.DATA_DIR || path.join(projectDir, 'data')),
-    baseUrl, currency, feeBps,
-    stripeKey: String(opts.stripeKey ?? process.env.STRIPE_SECRET_KEY ?? ''),
-    webhookSecret: String(opts.webhookSecret ?? process.env.STRIPE_WEBHOOK_SECRET ?? ''),
-    clamavEnabled: (opts.clamavEnabled ?? ['1','true'].includes(String(process.env.CLAMAV_ENABLED || '').toLowerCase())) === true,
-    clamavCommand: String(opts.clamavCommand || process.env.CLAMAV_COMMAND || 'clamscan'),
-    secureCookie: baseUrl.startsWith('https://')
-  };
-}
-
 export function createApp(options = {}) {
   const config = loadConfig(options);
   const { dataDir, baseUrl, currency, feeBps, stripeKey, webhookSecret, secureCookie, clamavEnabled, clamavCommand } = config;
   const scanner = options.scanner || scanPackage;
   const paymentConfigured = Boolean(stripeKey && webhookSecret);
-  const db = openDatabase(dataDir);
-  const rateLimit = createRateLimiter();
+  const db = openDatabase(dataDir, { seedDemo: config.demoCatalog });
+  // A demonstration database cannot later distribute its simulated purchases
+  // as real paid entitlements. Use a separate volume for real commerce.
+  const hasDemoOrders = summaryNumber(db, "SELECT COUNT(*) AS n FROM orders WHERE payment_provider='demo'") > 0;
+  const hasStripeOrders = summaryNumber(db, "SELECT COUNT(*) AS n FROM orders WHERE payment_provider='stripe' AND amount_minor>0") > 0;
+  if ((!config.demoCheckout && hasDemoOrders) || (config.demoCheckout && hasStripeOrders)) {
+    db.close();
+    throw new Error('演示交易和真实收款必须使用不同数据卷；请恢复原交易模式或创建新数据卷');
+  }
+  const rateLimit = createRateLimiter(config);
 
   async function dispatch(req, res) {
     securityHeaders(res);
@@ -294,11 +286,14 @@ export function createApp(options = {}) {
     const method = req.method || 'GET';
     const auth = getAuth(db, req);
 
-    if (pathname === '/api/health' && method === 'GET') return json(res, 200, { ok: true, version: '0.2.0-beta.1' });
+    if (pathname === '/api/health' && method === 'GET') {
+      db.prepare('SELECT 1').get();
+      return json(res, 200, { ok: true, version: '0.3.0-beta.1' });
+    }
     if (pathname === '/api/me' && method === 'GET') {
       return json(res, 200, {
         user: publicUser(auth), csrf: auth?.csrf_token || null,
-        config: { paymentConfigured, currency, feeBps, sellerPayouts: 'manual', maxPackageMiB: 50, clamavEnabled },
+        config: { paymentConfigured, demoCheckout: config.demoCheckout, currency, feeBps, sellerPayouts: 'manual', maxPackageMiB: 50, clamavEnabled },
         categories: CATEGORIES, platforms: PLATFORMS
       });
     }
@@ -344,6 +339,7 @@ export function createApp(options = {}) {
       const price = url.searchParams.get('price') || 'all';
       const sort = url.searchParams.get('sort') || 'new';
       let products = db.prepare("SELECT p.*,u.name AS seller_name FROM products p JOIN users u ON p.seller_id=u.id WHERE p.status='published' AND (p.is_demo=1 OR u.seller_status='approved') ORDER BY p.created_at DESC LIMIT 200").all();
+      if (!config.demoCatalog) products = products.filter(x => !x.is_demo);
       if (search) products = products.filter(x => (x.name + ' ' + x.tagline + ' ' + x.description).toLowerCase().includes(search));
       if (category && CATEGORIES.includes(category)) products = products.filter(x => x.category === category);
       if (platform && PLATFORMS.includes(platform)) products = products.filter(x => JSON.parse(x.platforms).includes(platform));
@@ -357,7 +353,7 @@ export function createApp(options = {}) {
 
     const productDetail = pathname.match(/^\/api\/products\/([a-zA-Z0-9_-]+)$/);
     if (productDetail && method === 'GET') {
-      const product = selectPublicProduct(db, productDetail[1]);
+      const product = selectPublicProduct(db, productDetail[1], config.demoCatalog);
       if (!product) fail(404, '软件不存在');
       const hasAccess = auth ? Boolean(db.prepare('SELECT id FROM entitlements WHERE buyer_id=? AND product_id=?').get(auth.id, product.id)) : false;
       return json(res, 200, { product: { ...publicProduct(product, true), has_access: hasAccess } });
@@ -366,6 +362,7 @@ export function createApp(options = {}) {
     const sellerDetail = pathname.match(/^\/api\/sellers\/([a-zA-Z0-9_-]+)$/);
     if (sellerDetail && method === 'GET') {
       const seller = db.prepare("SELECT id,name,seller_bio,seller_website,created_at FROM users WHERE id=? AND role='seller' AND seller_status='approved'").get(sellerDetail[1]);
+      if (!config.demoCatalog && seller?.id === 'softcove-demo-studio') fail(404, '开发者不存在');
       if (!seller) fail(404, '开发者不存在');
       const products = db.prepare("SELECT p.*,u.name AS seller_name FROM products p JOIN users u ON p.seller_id=u.id WHERE p.seller_id=? AND p.status='published'").all(seller.id);
       return json(res, 200, { seller, products: products.map(p => publicProduct(p)) });
@@ -392,14 +389,14 @@ export function createApp(options = {}) {
       const settlements = db.prepare('SELECT id,amount_minor,currency,method,external_reference,note,created_at FROM manual_settlements WHERE seller_id=? ORDER BY created_at DESC LIMIT 100').all(auth.id);
       const balance = sellerBalance(db, auth.id);
       const products = db.prepare('SELECT * FROM products WHERE seller_id=? AND is_demo=0 ORDER BY updated_at DESC').all(auth.id);
-      const orders = db.prepare("SELECT o.id,o.product_name,o.amount_minor,o.currency,o.platform_fee_minor,o.seller_due_minor,o.refunded_minor,o.status,o.paid_at,o.created_at FROM orders o WHERE o.seller_id=? AND o.status IN ('paid','free') ORDER BY o.created_at DESC LIMIT 50").all(auth.id);
+      const orders = db.prepare("SELECT o.id,o.product_name,o.amount_minor,o.currency,o.platform_fee_minor,o.seller_due_minor,o.refunded_minor,o.status,o.paid_at,o.created_at,o.payment_provider FROM orders o WHERE o.seller_id=? AND o.status IN ('paid','free') ORDER BY o.created_at DESC LIMIT 50").all(auth.id);
       return json(res, 200, {
         profile, settlements, products: products.map(sellerProduct), orders,
         stats: {
           published: products.filter(p => p.status === 'published').length,
           pending: products.filter(p => p.status === 'pending').length,
-          sold: orders.filter(o => o.status === 'paid').length,
-          gross_minor: summaryNumber(db, "SELECT COALESCE(SUM(amount_minor),0) AS n FROM orders WHERE seller_id=? AND status='paid'", [auth.id]),
+          sold: orders.filter(o => o.status === 'paid' && o.payment_provider !== 'demo').length,
+          gross_minor: summaryNumber(db, "SELECT COALESCE(SUM(amount_minor),0) AS n FROM orders WHERE seller_id=? AND status='paid' AND payment_provider!='demo'", [auth.id]),
           ...balance
         }
       });
@@ -489,14 +486,15 @@ export function createApp(options = {}) {
       const settlements = db.prepare("SELECT m.id,m.amount_minor,m.currency,m.method,m.external_reference,m.note,m.created_at,u.name AS seller_name FROM manual_settlements m JOIN users u ON u.id=m.seller_id ORDER BY m.created_at DESC LIMIT 100").all();
       return json(res, 200, {
         products:products.map(sellerProduct),orders,sellers,settlements,
+        deployment: deploymentReadiness(db, config),
         stats: {
           sellers: summaryNumber(db, "SELECT COUNT(*) AS n FROM users WHERE role='seller' AND id!='softcove-demo-studio'"),
           sellers_pending: summaryNumber(db, "SELECT COUNT(*) AS n FROM users WHERE role='seller' AND seller_status='pending'"),
           manual_settled_minor: summaryNumber(db, 'SELECT COALESCE(SUM(amount_minor),0) AS n FROM manual_settlements'),
           pending: summaryNumber(db, "SELECT COUNT(*) AS n FROM products WHERE status='pending'"),
-          orders_paid: summaryNumber(db, "SELECT COUNT(*) AS n FROM orders WHERE status='paid'"),
-          gross_minor: summaryNumber(db, "SELECT COALESCE(SUM(amount_minor),0) AS n FROM orders WHERE status='paid'"),
-          fees_minor: summaryNumber(db, "SELECT COALESCE(SUM(platform_fee_minor),0) AS n FROM orders WHERE status='paid'")
+          orders_paid: summaryNumber(db, "SELECT COUNT(*) AS n FROM orders WHERE status='paid' AND payment_provider!='demo'"),
+          gross_minor: summaryNumber(db, "SELECT COALESCE(SUM(amount_minor),0) AS n FROM orders WHERE status='paid' AND payment_provider!='demo'"),
+          fees_minor: summaryNumber(db, "SELECT COALESCE(SUM(platform_fee_minor),0) AS n FROM orders WHERE status='paid' AND payment_provider!='demo'")
         }
       });
     }
@@ -608,7 +606,7 @@ export function createApp(options = {}) {
       checkMutation(req, auth, baseUrl);
       rateLimit(req, 'orders', 30, 60 * 60 * 1000);
       const body = await readJSON(req);
-      const product = selectPublicProduct(db, String(body.productId || ''));
+      const product = selectPublicProduct(db, String(body.productId || ''), config.demoCatalog);
       if (!product || product.is_demo || product.scan_status !== 'manually_verified' || !product.file_key) fail(409, '当前软件尚未开放购买');
       if (product.seller_id === auth.id) fail(409, '无法购买自己的软件');
       if (db.prepare('SELECT id FROM entitlements WHERE buyer_id=? AND product_id=?').get(auth.id, product.id)) fail(409, '你已经拥有这款软件，请到软件库下载');
@@ -627,6 +625,15 @@ export function createApp(options = {}) {
         return json(res, 201, { orderId: order, status: 'free', library: true });
       }
 
+      if (config.demoCheckout) {
+        let order = db.prepare("SELECT id FROM orders WHERE buyer_id=? AND product_id=? AND payment_provider='demo' AND status='pending'").get(auth.id, product.id);
+        if (!order) {
+          order = { id: uid('order_') };
+          db.prepare("INSERT INTO orders (id,buyer_id,seller_id,product_id,product_name,amount_minor,currency,status,payment_provider,created_at) VALUES (?,?,?,?,?,?,?,'pending','demo',?)")
+            .run(order.id, auth.id, product.seller_id, product.id, product.name, product.price_minor, product.currency, new Date().toISOString());
+        }
+        return json(res, 201, { orderId: order.id, status: 'pending', demoCheckout: true });
+      }
       if (!paymentConfigured) fail(503, '平台尚未启用正式支付，请联系管理员配置 Stripe');
       const orderId = uid('order_');
       const now = new Date().toISOString();
@@ -645,10 +652,30 @@ export function createApp(options = {}) {
       }
     }
 
+    const demoComplete = pathname.match(/^\/api\/orders\/([a-zA-Z0-9_-]+)\/demo-complete$/);
+    if (demoComplete && method === 'POST') {
+      checkMutation(req, auth, baseUrl);
+      if (!config.demoCheckout) fail(403, '演示交易未启用');
+      const result = withTransaction(db, () => {
+        const order = db.prepare("SELECT * FROM orders WHERE id=? AND buyer_id=? AND payment_provider='demo'").get(demoComplete[1], auth.id);
+        if (!order) fail(404, '未找到你的演示订单');
+        if (order.status === 'paid') return { ok: true, simulated: true, library: true };
+        if (order.status !== 'pending') fail(409, '此演示订单已结束');
+        const product = selectPublicProduct(db, order.product_id, config.demoCatalog);
+        if (!product || product.is_demo || product.scan_status !== 'manually_verified' || !product.file_key) fail(409, '软件已暂停分发，无法模拟完成');
+        const now = new Date().toISOString();
+        db.prepare("UPDATE orders SET status='paid',paid_at=?,platform_fee_minor=0,seller_due_minor=0 WHERE id=?").run(now, order.id);
+        db.prepare('INSERT OR IGNORE INTO entitlements (id,buyer_id,product_id,order_id,created_at) VALUES (?,?,?,?,?)')
+          .run(uid('ent_'), auth.id, product.id, order.id, now);
+        return { ok: true, simulated: true, library: true };
+      });
+      return json(res, 200, result);
+    }
+
     if (pathname === '/api/my/library' && method === 'GET') {
       requireAuth(auth);
       const products = db.prepare("SELECT p.id,p.name,p.tagline,p.icon,p.accent,p.category,p.platforms,p.version,p.status,p.scan_status,p.file_name,p.file_size,p.is_demo,u.seller_status,e.created_at AS acquired_at,o.id AS order_id,o.status AS order_status FROM entitlements e JOIN products p ON e.product_id=p.id JOIN users u ON u.id=p.seller_id JOIN orders o ON e.order_id=o.id WHERE e.buyer_id=? ORDER BY e.created_at DESC").all(auth.id).map(p => ({ ...p, platforms: JSON.parse(p.platforms), downloadable: p.status === 'published' && p.scan_status === 'manually_verified' && p.seller_status === 'approved' && !!p.file_name }));
-      const orders = db.prepare('SELECT id,product_id,product_name,amount_minor,currency,status,refunded_minor,created_at,paid_at FROM orders WHERE buyer_id=? ORDER BY created_at DESC LIMIT 100').all(auth.id);
+      const orders = db.prepare('SELECT id,product_id,product_name,amount_minor,currency,status,refunded_minor,created_at,paid_at,payment_provider FROM orders WHERE buyer_id=? ORDER BY created_at DESC LIMIT 100').all(auth.id);
       return json(res, 200, { products, orders });
     }
 
@@ -698,18 +725,17 @@ export function createApp(options = {}) {
   return { server, db, config };
 }
 
-function loadDotEnv() {
-  const filename = path.join(projectDir, '.env');
-  if (!existsSync(filename)) return;
-  for (const line of readFileSync(filename, 'utf8').split(/\r?\n/)) {
-    if (!line || line.trim().startsWith('#')) continue;
-    const m = line.match(/^([A-Z][A-Z0-9_]*)=(.*)$/);
-    if (m && process.env[m[1]] === undefined) process.env[m[1]] = m[2].replace(/^["']|["']$/g, '');
-  }
-}
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  loadDotEnv();
-  const port = Number(process.env.PORT || 3100);
-  const { server } = createApp();
+  loadEnvironment();
+  const { server, db, config: { port } } = createApp();
+  let stopping = false;
+  const stop = () => {
+    if (stopping) return;
+    stopping = true;
+    const timeout = setTimeout(() => process.exit(1), 25000).unref();
+    server.close(() => { clearTimeout(timeout); db.close(); });
+  };
+  process.on('SIGTERM', stop);
+  process.on('SIGINT', stop);
   server.listen(port, '0.0.0.0', () => console.log('SoftCove running on http://localhost:' + port));
 }

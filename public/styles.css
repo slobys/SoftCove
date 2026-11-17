@@ -47,7 +47,7 @@ main{flex:1}
 .eyebrow{display:inline-flex;align-items:center;gap:9px;padding:7px 12px;background:rgba(80,231,213,.10);border:1px solid rgba(112,226,225,.22);border-radius:30px;font-size:11px;letter-spacing:1.4px;color:#78f2dc;font-weight:800}
 .eyebrow .pulse{width:7px;height:7px;background:#71ebca;border-radius:50%;box-shadow:0 0 0 4px rgba(85,215,184,.13)}
 .hero h1{margin:21px 0 17px;font-size:clamp(38px,4.1vw,56px);letter-spacing:-1.7px;line-height:1.23;font-weight:840}
-.gradient-word{background:linear-gradient(100deg,#77f3d2,#82d8fe 80%);color:transparent;background-clip:text}
+.gradient-word{color:#77f3d2}
 .hero-desc{color:#aabbd1;font-size:15px;line-height:2;max-width:510px;margin:0 0 28px}
 .hero-actions{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
 .hero-claim{display:flex;align-items:center;gap:19px;margin-top:35px;flex-wrap:wrap;color:#a1b2c9;font-size:11px}
@@ -238,6 +238,17 @@ main{flex:1}
 .library-info h3{font-size:14px;margin:0 0 4px}
 .library-info p{font-size:11px;color:#94a0ae;margin:0}
 .library-item .btn{flex-shrink:0}
+.demo-site-notice{padding:12px 20px;background:#fff1cc;color:#694700;text-align:center;font-size:14px;line-height:1.7}
+.deployment-checks{margin:0}
+.deployment-check{padding:15px 0;border-bottom:1px solid var(--line)}
+.deployment-check:first-child{padding-top:0}
+.deployment-check dt{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;justify-content:space-between;font-size:14px;font-weight:700}
+.deployment-check dd{margin:6px 0 0;max-width:72ch;font-size:13px;color:#526175;line-height:1.8}
+.deployment-state{font-size:12px;font-weight:650;color:#735014}
+.deployment-state-complete{color:#08715f}
+.deployment-state-configured{color:#354bb5}
+.deployment-address{margin:16px 0 0;font-size:13px;color:#526175;overflow-wrap:anywhere}
+.deployment-address a{text-decoration:underline;text-underline-offset:3px;color:#08715f}
 .muted{color:#93a0ad}
 .center{text-align:center}
 .toast-stack{position:fixed;right:21px;bottom:23px;z-index:100;max-width:380px;width:calc(100% - 42px);display:flex;flex-direction:column;gap:10px}

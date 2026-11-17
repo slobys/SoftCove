@@ -70,6 +70,54 @@ async function publish(t, seller, admin, price = 0) {
   return { id, fixture };
 }
 
+test('demo checkout is explicit, owner-only, idempotent and excluded from real money balances', async () => {
+  const t = await setup({ demoCheckout: true, demoCatalog: false });
+  try {
+    const seller = await register(t, 'demo-seller@test.example', 'seller');
+    const buyer = await register(t, 'demo-buyer@test.example', 'buyer');
+    const other = await register(t, 'demo-other@test.example', 'buyer');
+    t.db.prepare('INSERT INTO users (id,email,name,password_hash,role,created_at) VALUES (?,?,?,?,?,?)')
+      .run('demo-admin','demo-admin@test.example','Admin',hashPassword('StrongAdminPassword123!'),'admin',new Date().toISOString());
+    const login = await request(t,'/api/auth/login',{method:'POST',body:{email:'demo-admin@test.example',password:'StrongAdminPassword123!'}});
+    const admin = { cookie:login.res.headers.get('set-cookie').split(';')[0],csrf:login.data.csrf };
+    const { id, fixture } = await publish(t, seller, admin, 9900);
+    const created = await request(t,'/api/orders',{method:'POST',cookie:buyer.cookie,csrf:buyer.csrf,body:{productId:id,amount_minor:1}});
+    assert.equal(created.status, 201);
+    assert.equal(created.data.demoCheckout, true);
+    const duplicate = await request(t,'/api/orders',{method:'POST',cookie:buyer.cookie,csrf:buyer.csrf,body:{productId:id}});
+    assert.equal(duplicate.data.orderId, created.data.orderId);
+    assert.equal((await request(t,'/api/my/library',{cookie:buyer.cookie})).data.products.length, 0);
+    const route = '/api/orders/' + created.data.orderId + '/demo-complete';
+    assert.equal((await request(t,route,{method:'POST',cookie:buyer.cookie,body:{}})).status, 403);
+    assert.equal((await request(t,route,{method:'POST',cookie:other.cookie,csrf:other.csrf,body:{}})).status, 404);
+    t.db.prepare("UPDATE users SET seller_status='suspended' WHERE id=?").run(seller.id);
+    assert.equal((await request(t,route,{method:'POST',cookie:buyer.cookie,csrf:buyer.csrf,body:{}})).status, 409);
+    t.db.prepare("UPDATE users SET seller_status='approved' WHERE id=?").run(seller.id);
+    for (let i=0; i<2; i++) {
+      const completed = await request(t,route,{method:'POST',cookie:buyer.cookie,csrf:buyer.csrf,body:{}});
+      assert.equal(completed.status, 200);
+      assert.equal(completed.data.simulated, true);
+    }
+    const order = t.db.prepare('SELECT * FROM orders WHERE id=?').get(created.data.orderId);
+    assert.equal(order.amount_minor, 9900);
+    assert.equal(order.payment_provider, 'demo');
+    assert.equal(order.seller_due_minor, 0);
+    assert.equal(order.platform_fee_minor, 0);
+    assert.equal(t.db.prepare('SELECT COUNT(*) AS n FROM entitlements').get().n, 1);
+    const download = await request(t,'/api/my/library/' + id + '/download',{cookie:buyer.cookie});
+    assert.deepEqual(download.data, fixture);
+    const overview = await request(t,'/api/admin/overview',{cookie:admin.cookie});
+    assert.equal(overview.data.stats.gross_minor, 0);
+    assert.equal(overview.data.stats.orders_paid, 0);
+    const studio = await request(t,'/api/seller/overview',{cookie:seller.cookie});
+    assert.equal(studio.data.stats.gross_minor, 0);
+    assert.equal(studio.data.stats.due_minor, 0);
+    assert.throws(() => createApp({dataDir:t.dir,baseUrl:'http://localhost:3100',demoCheckout:false}), /不同数据卷/);
+    t.config.demoCheckout = false;
+    assert.equal((await request(t,route,{method:'POST',cookie:buyer.cookie,csrf:buyer.csrf,body:{}})).status, 403);
+  } finally { await t.close(); }
+});
+
 test('storefront assets and key security headers', async () => {
   const t = await setup();
   try {

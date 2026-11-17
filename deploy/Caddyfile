@@ -1,0 +1,11 @@
+{$SOFTCOVE_DOMAIN} {
+    encode zstd gzip
+    request_body {
+        max_size 51MB
+    }
+    header Strict-Transport-Security "max-age=31536000"
+    reverse_proxy softcove:3100 {
+        # Always replace caller-supplied values; the app trusts only this hop.
+        header_up X-Forwarded-For {remote_host}
+    }
+}

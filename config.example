@@ -3,6 +3,14 @@ PUBLIC_BASE_URL=http://localhost:3100
 DATA_DIR=./data
 APP_CURRENCY=CNY
 PLATFORM_FEE_BPS=1500
+# Local previews can show fictitious products; production Compose forces this off.
+ENABLE_DEMO_CATALOG=1
+# Enable only behind a controlled proxy that REPLACES X-Forwarded-For.
+TRUST_PROXY=0
+# Explicit sandbox only. Never reuse a sandbox data volume for real commerce.
+DEMO_CHECKOUT_ENABLED=0
+# Set by deploy.sh for bundled Caddy HTTPS. Leave empty for an existing proxy.
+SOFTCOVE_DOMAIN=
 # Paid checkout is disabled until both values are supplied.
 STRIPE_SECRET_KEY=
 STRIPE_WEBHOOK_SECRET=
