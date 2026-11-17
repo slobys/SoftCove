@@ -24,3 +24,5 @@
 另已在浏览器验证演示商品下单、确认模拟付款和下载授权，订单明确显示“模拟完成 · 未收款”。模拟订单不计入收入、佣金或结算；含演示订单的数据库禁止直接切换为真实收款。`npm test` 同时覆盖金额篡改、越权、CSRF、重复确认、卖家暂停与模式隔离。
 
 界面截图为本地测试数据：[模拟交易](screenshots/demo-checkout.jpg)、[桌面](screenshots/admin-desktop.jpg)、[窄屏](screenshots/admin-mobile.jpg)。
+
+首轮 Ubuntu CI 发现 root 维护容器生成的快照无法由普通宿主机用户读取；已在备份完成时归还快照的 UID/GID，并增加宿主机读取断言。测试清理改为明确指定临时项目名和 Compose 文件。

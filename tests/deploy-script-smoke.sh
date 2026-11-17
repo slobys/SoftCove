@@ -4,12 +4,14 @@ set -euo pipefail
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
 test_dir=$(mktemp -d)
 export COMPOSE_PROJECT_NAME="softcove-deploy-test-$RANDOM"
+test_project="$COMPOSE_PROJECT_NAME"
 recovery_project="$COMPOSE_PROJECT_NAME-recovery"
 export SOFTCOVE_ENV_FILE="$test_dir/.env"
 export SOFTCOVE_HTTP_PORT="$((39000 + RANDOM % 1000))"
 cleanup() {
-  docker compose --env-file "$SOFTCOVE_ENV_FILE" down -v --remove-orphans --rmi local >/dev/null 2>&1 || true
-  COMPOSE_PROJECT_NAME="$recovery_project" docker compose --env-file "$SOFTCOVE_ENV_FILE" down -v --remove-orphans --rmi local >/dev/null 2>&1 || true
+  for project in "$test_project" "$recovery_project"; do
+    docker compose -p "$project" --env-file "$SOFTCOVE_ENV_FILE" -f compose.yaml down -v --remove-orphans --rmi local >/dev/null 2>&1 || true
+  done
   if [[ -d "$test_dir/backups" ]]; then
     docker run --rm -v "$test_dir/backups:/backups" node:24-bookworm-slim node -e \
       'for (const name of require("fs").readdirSync("/backups")) require("fs").rmSync("/backups/"+name,{recursive:true,force:true})' >/dev/null
@@ -29,6 +31,7 @@ bash deploy.sh --local
 [[ "$(sha256sum "$SOFTCOVE_ENV_FILE")" == "$before" ]]
 bash scripts/ops.sh backup "$test_dir/backups"
 snapshot=$(find "$test_dir/backups" -mindepth 1 -maxdepth 1 -type d -name 'softcove-*')
+[[ -r "$snapshot/manifest.json" ]]
 COMPOSE_PROJECT_NAME="$recovery_project" docker compose --env-file "$SOFTCOVE_ENV_FILE" build softcove
 COMPOSE_PROJECT_NAME="$recovery_project" bash scripts/ops.sh restore "$snapshot"
 COMPOSE_PROJECT_NAME="$recovery_project" docker compose --env-file "$SOFTCOVE_ENV_FILE" run --rm --no-deps -T softcove node scripts/create-admin.mjs --check

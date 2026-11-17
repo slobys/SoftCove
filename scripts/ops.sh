@@ -35,8 +35,8 @@ case "$command_name" in
     resume_app() { if [[ -n "$running" ]]; then "${COMPOSE[@]}" start softcove; fi; }
     trap resume_app EXIT
     "${COMPOSE[@]}" stop softcove
-    "${COMPOSE[@]}" run --rm --no-deps -T --user 0:0 --cap-add DAC_OVERRIDE --cap-add FOWNER -v "$backup_root:/backups" softcove \
-      node scripts/backup.mjs create "/backups/$snapshot"
+    "${COMPOSE[@]}" run --rm --no-deps -T --user 0:0 --cap-add DAC_OVERRIDE --cap-add FOWNER --cap-add CHOWN -v "$backup_root:/backups" softcove \
+      sh -c 'node scripts/backup.mjs create "$1" && chown -R "$2:$3" "$1"' sh "/backups/$snapshot" "$(id -u)" "$(id -g)"
     printf '备份完成：%s/%s\n请复制到另一台设备妥善保存。\n' "$backup_root" "$snapshot" ;;
   restore)
     [[ -n "${2:-}" && -d "$2" ]] || die '请指定现有备份目录。'
