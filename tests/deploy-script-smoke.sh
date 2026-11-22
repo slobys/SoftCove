@@ -29,6 +29,10 @@ ADMIN
 before=$(sha256sum "$SOFTCOVE_ENV_FILE")
 bash deploy.sh --local
 [[ "$(sha256sum "$SOFTCOVE_ENV_FILE")" == "$before" ]]
+node scripts/verify-demo.mjs "http://localhost:$SOFTCOVE_HTTP_PORT" <<'ADMIN'
+ci-admin@test.example
+OnlyForDisposableCiTests123!
+ADMIN
 bash scripts/ops.sh backup "$test_dir/backups"
 snapshot=$(find "$test_dir/backups" -mindepth 1 -maxdepth 1 -type d -name 'softcove-*')
 [[ -r "$snapshot/manifest.json" ]]

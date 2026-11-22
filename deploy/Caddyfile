@@ -1,7 +1,7 @@
 {$SOFTCOVE_DOMAIN} {
     encode zstd gzip
     request_body {
-        max_size 51MB
+        max_size 50MiB
     }
     header Strict-Transport-Security "max-age=31536000"
     reverse_proxy softcove:3100 {

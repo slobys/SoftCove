@@ -12,6 +12,7 @@ import { loadConfig, projectDir } from '../src/config.mjs';
 import { openDatabase } from '../src/db.mjs';
 import { hashPassword, verifyPassword, createRateLimiter } from '../src/security.mjs';
 import { createBackup, restoreBackup } from '../scripts/backup.mjs';
+import { beginDemoVerification, createDemoClient } from '../scripts/verify-demo.mjs';
 
 test('configuration rejects unsafe production origins and incomplete payment credentials', () => {
   for (const baseUrl of ['https://user:pass@example.com', 'https://example.com/path', 'https://example.com?x=1', 'javascript:alert(1)', 'https://example.com/#admin']) {
@@ -55,6 +56,11 @@ test('production hides existing demos without deleting data; readiness is admin-
     assert.equal((await fetch(root + '/api/sellers/softcove-demo-studio')).status, 404);
     assert.equal(app.db.prepare('SELECT COUNT(*) AS n FROM products WHERE is_demo=1').get().n, 8);
     assert.equal((await fetch(root + '/api/admin/overview')).status, 401);
+    await assert.rejects(
+      beginDemoVerification(createDemoClient(root), { email: 'admin@test.example', password: 'UnusedDummyPassword!' }),
+      /必须启用演示交易/
+    );
+    assert.equal(app.db.prepare('SELECT COUNT(*) AS n FROM sessions').get().n, 0);
     app.db.prepare('INSERT INTO users (id,email,name,password_hash,role,created_at) VALUES (?,?,?,?,?,?)')
       .run('admin', 'admin@test.example', '管理员', hashPassword('AdminPasswordForTesting!'), 'admin', new Date().toISOString());
     const login = await fetch(root + '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: 'admin@test.example', password: 'AdminPasswordForTesting!' }) });
