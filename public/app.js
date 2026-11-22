@@ -176,7 +176,8 @@ function productPage(p) {
     art(p, true) +
     '<div class="detail-copy"><div class="platform-tags">' + p.platforms.map(chipPlatform).join('') + (p.is_demo ? chipPlatform('展示样品') : '') + '</div>' +
     '<h2 class="detail-title">' + esc(p.name) + '</h2><p class="detail-tagline">' + esc(p.tagline) + '</p><hr style="border:0;border-top:1px solid #edf1f5;margin:24px 0"/>' +
-    '<h3 style="font-size:16px">关于这款软件</h3><p class="detail-description">' + esc(p.description || p.tagline) + '</p></div></article>' +
+    '<h3 style="font-size:16px">关于这款软件</h3><p class="detail-description">' + esc(p.description || p.tagline) + '</p>' +
+    (p.release_notes ? '<h3>本次更新</h3><p class="detail-description release-notes">' + esc(p.release_notes) + '</p>' : '') + '</div></article>' +
     '<aside class="detail-aside"><div class="overline">GET THIS SOFTWARE</div><div class="price' + (isFree ? ' free' : '') + '" style="margin:9px 0 19px">' + (isFree ? '免费' : money(p.price_minor, p.currency)) + '</div>' +
     cta + '<p class="purchase-help">' + esc(message) + '</p><div class="aside-sep"></div>' +
     '<div class="info-row"><span>开发者</span><b><a class="link" href="#/studio/' + encodeURIComponent(p.seller_id) + '">' + esc(p.seller_name) + ' ↗</a></b></div>' +
@@ -232,11 +233,15 @@ function sellerSettlementPanel(data) {
 function sellerPage(data) {
   const stats = data.stats;
   const rows = data.products.map(p => '<tr><td><strong>' + esc(p.name) + '</strong><div class="muted">v' + esc(p.version) + ' · ' + p.platforms.map(esc).join('/') + '</div></td>' +
-    '<td>' + money(p.price_minor, p.currency) + '</td><td>' + statusPill(p.status) + (p.review_note ? '<div class="muted" title="' + esc(p.review_note) + '">' + esc(p.review_note.slice(0, 48)) + '</div>' : '') + '</td>' +
+    '<td>' + money(p.price_minor, p.currency) + '</td><td>' + statusPill(p.status) +
+    (p.update ? '<div class="release-status">新版 ' + esc(p.update.version) + ' ' + statusPill(p.update.status) + '</div>' : '') +
+    (p.review_note ? '<div class="muted" title="' + esc(p.review_note) + '">' + esc(p.review_note.slice(0, 48)) + '</div>' : '') + '</td>' +
     '<td>' + (p.file_name ? '<span title="' + esc(p.file_sha256 || '') + '">' + esc(p.file_name) + '</span>' : '未上传') + '</td>' +
     '<td><div class="table-actions">' +
     (['draft','rejected'].includes(p.status) ? '<a class="btn btn-light btn-sm" href="#/seller/edit/' + encodeURIComponent(p.id) + '">继续编辑</a>' : '') +
     (p.status === 'published' ? '<a class="btn btn-light btn-sm" href="#/product/' + encodeURIComponent(p.id) + '">查看商品</a>' : '') +
+    (p.status === 'published' && data.profile.seller_status === 'approved' ? '<a class="btn btn-light btn-sm" href="#/seller/update/' +
+      encodeURIComponent(p.id) + '">' + (p.update?.status === 'pending' ? '查看送审版本' : p.update ? '继续编辑更新' : '发布新版本') + '</a>' : '') +
     '</div></td></tr>').join('');
   return title('开发者工作台', '管理作品、跟踪订单，开启你的软件创作生意。') +
     '<section class="container page-section"><div class="dash-layout">' + dashSide(false, 'overview') +
@@ -254,6 +259,31 @@ function sellerPage(data) {
     data.orders.map(o => '<tr><td><strong>' + esc(o.product_name) + '</strong></td><td>' + money(o.amount_minor,o.currency) + '</td><td>' + money(o.seller_due_minor,o.currency) + '</td><td>' + orderStatus(o) + '</td><td>' + fmtDate(o.paid_at || o.created_at) + '</td></tr>').join('') +
     '</tbody></table></div>' : '<p class="section-note">暂无实际订单。你的软件审核上架后，交易记录会出现在这里。</p>') +
     '</div>' + sellerSettlementPanel(data) + '</div></div></section>';
+}
+
+function sellerUpdatePage(product) {
+  const update = product.update;
+  const back = '<a class="btn btn-outline" href="#/seller">返回工作台</a>';
+  let content;
+  if (update?.status === 'pending') {
+    content = '<div class="panel"><h2>新版 ' + esc(update.version) + ' 正在审核</h2><p class="release-notes">' +
+      esc(update.release_notes) + '</p><p>已提交 ' + esc(update.file_name) + '</p>' + back + '</div>';
+  } else {
+    content = '<form class="panel" id="seller-update-form" data-product-id="' + esc(product.id) + '" data-update-id="' + esc(update?.id) + '">' +
+      (update?.review_note ? '<p class="notice danger">审核意见 ' + esc(update.review_note) + '</p>' : '') +
+      '<div class="form-field"><label for="update-version">新版本号</label><input class="input" id="update-version" name="version" ' +
+      'required maxlength="30" pattern="[A-Za-z0-9][A-Za-z0-9._+\\-]{0,29}" value="' + esc(update?.version) + '" placeholder="例如 1.2.0"/></div>' +
+      '<div class="form-field"><label for="update-notes">更新说明</label><textarea class="input" id="update-notes" name="releaseNotes" rows="5" ' +
+      'required maxlength="1500">' + esc(update?.release_notes) + '</textarea></div>' +
+      '<div class="form-field"><label for="update-package">新版安装包</label><input class="input" type="file" id="update-package" name="package" ' +
+      'accept=".zip,.7z,.tar,.gz,.exe,.msi,.dmg,.pkg,.AppImage,.deb,.rpm,.apk,.msix"/>' +
+      '<p class="release-status">' + (update?.file_name ? '当前草稿已上传 ' + esc(update.file_name) + '。' + esc(update.scan_detail) : '可先保存草稿。提交审核前需上传安装包，单文件最大 50 MiB。') + '</p></div>' +
+      '<div class="action-row"><button type="submit" class="btn btn-light" value="draft">保存草稿</button>' +
+      '<button type="submit" class="btn btn-primary" value="submit">提交新版审核</button>' + back + '</div></form>';
+  }
+  return title('发布新版本', product.name + ' · 在售版本 ' + product.version + '。新版审核通过后，已有授权的买家可直接下载。') +
+    '<section class="container page-section"><div class="dash-layout">' + dashSide(false, 'overview') +
+    '<div class="dash-main">' + content + '</div></div></section>';
 }
 function sellerFormPage(existing) {
   const edit = Boolean(existing);
@@ -314,19 +344,28 @@ function deploymentPanel(deployment) {
 }
 function adminPage(data) {
   const stats = data.stats;
-  const queue = data.products.filter(p => p.status === 'pending');
+  const queue = [...data.products.filter(p => p.status === 'pending'), ...(data.updates || [])];
   const liveProducts = data.products.filter(p => p.status === 'published');
-  const rows = queue.map(p => '<tr><td><strong>' + esc(p.name) + '</strong><div class="muted">作者：' + esc(p.seller_name) + ' · ' + esc(p.version) + '</div></td>' +
-    '<td>' + money(p.price_minor,p.currency) + '</td>' +
-    '<td title="' + esc(p.file_sha256 || '') + '">' + esc(p.file_name || '未上传') + '<div class="muted">' + (p.file_size ? (p.file_size / 1024 / 1024).toFixed(2) + ' MiB' : '') + '</div></td>' +
-    '<td>' + statusPill(p.status) + '<div class="muted">' + esc(p.scan_detail || p.scan_status || '') + '</div></td><td><div class="table-actions"><a class="btn btn-light btn-sm" href="/api/admin/products/' + encodeURIComponent(p.id) + '/file" download>隔离下载 ↓</a>' +
-    '<button class="btn btn-sm btn-primary" data-action="approve" data-id="' + esc(p.id) + '">审核通过</button>' +
-    '<button class="btn btn-sm btn-danger" data-action="reject" data-id="' + esc(p.id) + '">驳回</button></div></td></tr>').join('');
+  const rows = queue.map(p => {
+    const isUpdate = Boolean(p.submission_id);
+    const resource = (isUpdate ? 'updates/' : 'products/') + encodeURIComponent(p.id);
+    const fileQuery = isUpdate ? '?submission=' + encodeURIComponent(p.submission_id) : '';
+    const attrs = ' data-id="' + esc(p.id) + '" data-submission="' + esc(p.submission_id) + '"';
+    return '<tr><td><strong>' + esc(p.name) + '</strong><div>' + esc(p.seller_name) + ' · ' +
+      (isUpdate ? '版本更新 ' : '首次上架 ') + esc(p.version) + '</div>' +
+      (isUpdate ? '<details class="release-details"><summary>查看更新说明</summary><p class="release-notes">' + esc(p.release_notes) + '</p></details>' : '') + '</td>' +
+      '<td>' + money(p.price_minor,p.currency) + '</td><td title="' + esc(p.file_sha256 || '') + '">' + esc(p.file_name || '未上传') +
+      '<div class="muted">' + (p.file_size ? (p.file_size / 1024 / 1024).toFixed(2) + ' MiB' : '') + '</div></td>' +
+      '<td>' + statusPill(p.status) + '<div class="muted">' + esc(p.scan_detail || p.scan_status || '') +
+      '</div></td><td><div class="table-actions"><a class="btn btn-light btn-sm" href="/api/admin/' + resource + '/file' + fileQuery +
+      '" download>隔离下载 ↓</a><button class="btn btn-sm btn-primary" data-action="approve"' + attrs + '>' +
+      (isUpdate ? '批准发布新版' : '审核通过') + '</button><button class="btn btn-sm btn-danger" data-action="reject"' + attrs + '>驳回</button></div></td></tr>';
+  }).join('');
   return title('平台管理中心','审核真实商品、查看订单及交易佣金。') +
     '<section class="container page-section"><div class="dash-layout">' + dashSide(true,'overview') + '<div class="dash-main">' +
     '<div class="dash-head"><div><h2>平台运营概览</h2><p>软件安全与交易交付，需要每一次认真把关。</p></div></div>' +
     '<div class="stat-grid"><div class="stat-card"><div class="stat-label">入驻开发者 <span class="stat-symbol">♧</span></div><div class="stat-value">' + stats.sellers + '</div><div class="stat-foot">不包含演示账号</div></div>' +
-    '<div class="stat-card"><div class="stat-label">待审商品 <span class="stat-symbol">⌛</span></div><div class="stat-value">' + stats.pending + '</div><div class="stat-foot">需要人工安全检查</div></div>' +
+    '<div class="stat-card"><div class="stat-label">待审核 <span class="stat-symbol">⌛</span></div><div class="stat-value">' + stats.pending + '</div><div class="stat-foot">首次上架和版本更新</div></div>' +
     '<div class="stat-card"><div class="stat-label">已记录平台佣金 <span class="stat-symbol">¥</span></div><div class="stat-value">' + money(stats.fees_minor) + '</div><div class="stat-foot">未扣税与退款 · 非实际结算</div></div></div>' +
     deploymentPanel(data.deployment) + adminSellerPanels(data) +
     '<div class="notice danger" style="margin-bottom:19px"><strong>审核提醒：</strong>安装包默认隔离，ClamAV 为可选自动扫描且可能漏报。人工需另行核验软件签名、版权与运行行为，不能仅凭自动扫描就直接上架。</div>' +
@@ -414,6 +453,16 @@ async function render() {
     } else if (route === '/seller') {
       body = gate('seller','开发者工作台');
       if (!body) { state.sellerData = await api('/api/seller/overview'); body = sellerPage(state.sellerData); }
+    } else if (route.startsWith('/seller/update/')) {
+      body = gate('seller','发布新版本');
+      if (!body) {
+        state.sellerData = await api('/api/seller/overview');
+        const id = route.slice('/seller/update/'.length);
+        const product = state.sellerData.products.find(p => p.id === id && p.status === 'published');
+        body = product && state.sellerData.profile.seller_status === 'approved'
+          ? sellerUpdatePage(product) : title('当前无法发布更新', '请在工作台检查商品状态和开发者审核结果。') +
+          '<section class="container page-section"><a class="btn btn-light" href="#/seller">返回工作台</a></section>';
+      }
     } else if (route === '/seller/new' || route.startsWith('/seller/edit/')) {
       body = gate('seller','开发者编辑器');
       if (!body) {
@@ -536,6 +585,7 @@ document.addEventListener('click', async event => {
   }
   if (action === 'approve' || action === 'reject') {
     const approved = action === 'approve';
+    const submissionId = element.dataset.submission;
     let note = '';
     if (approved) {
       if (!confirm('你是否已在隔离环境进行恶意软件扫描、签名及版权核验？\n\n即使启用 ClamAV 自动扫描，仍需要人工核验版权、签名和运行行为。只有真正完成核验才能确定。')) return;
@@ -545,8 +595,9 @@ document.addEventListener('click', async event => {
     }
     element.disabled = true;
     try {
-      await api('/api/admin/products/' + encodeURIComponent(element.dataset.id) + '/review','POST',{decision:approved ? 'approve' : 'reject',scanConfirmed:approved,note});
-      toast(approved ? '审核通过，软件已上架' : '已驳回并通知展示在卖家后台');
+      const resource = (submissionId ? 'updates/' : 'products/') + encodeURIComponent(element.dataset.id);
+      await api('/api/admin/' + resource + '/review','POST',{decision:approved ? 'approve' : 'reject',scanConfirmed:approved,note,submissionId});
+      toast(approved ? (submissionId ? '新版已发布，买家可下载更新' : '审核通过，软件已上架') : '已驳回并通知展示在卖家后台');
       await render();
     } catch(error) { element.disabled = false; toast(error.message,true); }
   }
@@ -558,7 +609,7 @@ document.addEventListener('change', async event => {
 });
 document.addEventListener('submit', async event => {
   const form = event.target;
-  if (!['search-form','auth-form','seller-product-form','seller-profile-form'].includes(form.id)) return;
+  if (!['search-form','auth-form','seller-product-form','seller-profile-form','seller-update-form'].includes(form.id)) return;
   event.preventDefault();
   if (form.id === 'search-form') {
     state.search = form.elements.search.value.trim();
@@ -566,6 +617,8 @@ document.addEventListener('submit', async event => {
     return;
   }
   const submit = event.submitter;
+  if (form.dataset.saving) return;
+  form.dataset.saving = '1';
   if (submit) submit.disabled = true;
   try {
     if (form.id === 'auth-form') {
@@ -587,6 +640,27 @@ document.addEventListener('submit', async event => {
       await api('/api/seller/profile','PUT',{bio:data.get('bio'),website:data.get('website')});
       await refreshMe();
       toast('资料已保存，等待管理员审核；审核通过后才能提交软件上架');
+      await render();
+    }
+    if (form.id === 'seller-update-form') {
+      const data = new FormData(form);
+      const file = data.get('package');
+      if (file?.size > state.config.maxPackageMiB * 1024 * 1024) throw new Error('安装包超过 50 MiB');
+      const draft = await api('/api/seller/products/' + encodeURIComponent(form.dataset.productId) + '/update', 'PUT', {
+        id: form.dataset.updateId || undefined, version: data.get('version'), releaseNotes: data.get('releaseNotes')
+      });
+      form.dataset.updateId = draft.id;
+      const endpoint = '/api/seller/updates/' + encodeURIComponent(draft.id);
+      if (file?.size) {
+        toast('正在上传新版安装包');
+        const scan = await api(endpoint + '/file?filename=' + encodeURIComponent(file.name), 'PUT', file, true);
+        if (['scan_error','scan_failed'].includes(scan.scan_status)) throw new Error(scan.scan_detail || '扫描未通过，请更换安装包');
+      }
+      if (submit?.value === 'submit') {
+        await api(endpoint + '/submit', 'POST', {});
+        toast('新版已提交审核，当前版本继续提供下载');
+      } else toast('新版草稿已保存');
+      location.hash = '#/seller';
       await render();
     }
     if (form.id === 'seller-product-form') {
@@ -620,7 +694,10 @@ document.addEventListener('submit', async event => {
     }
   } catch(error) {
     toast(error.message,true);
-  } finally { if (submit) submit.disabled = false; }
+  } finally {
+    delete form.dataset.saving;
+    if (submit) submit.disabled = false;
+  }
 });
 window.addEventListener('hashchange', () => { render(); window.scrollTo({ top: 0, behavior: 'instant' }); });
 refreshMe().then(() => render()).catch(error => {

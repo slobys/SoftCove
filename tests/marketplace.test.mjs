@@ -70,6 +70,89 @@ async function publish(t, seller, admin, price = 0) {
   return { id, fixture };
 }
 
+test('reviewed product updates preserve existing purchases and bind approval to the inspected submission', async () => {
+  const t = await setup({ demoCheckout: true, demoCatalog: false });
+  try {
+    const seller = await register(t, 'update-seller@test.example', 'seller');
+    const other = await register(t, 'update-other@test.example', 'seller');
+    const buyer = await register(t, 'update-buyer@test.example', 'buyer');
+    t.db.prepare('INSERT INTO users (id,email,name,password_hash,role,created_at) VALUES (?,?,?,?,?,?)')
+      .run('update-admin', 'update-admin@test.example', 'Admin', hashPassword('StrongAdminPassword123!'), 'admin', new Date().toISOString());
+    const login = await request(t, '/api/auth/login', { method: 'POST', body: { email: 'update-admin@test.example', password: 'StrongAdminPassword123!' } });
+    const admin = { cookie: login.res.headers.get('set-cookie').split(';')[0], csrf: login.data.csrf };
+    const { id, fixture } = await publish(t, seller, admin, 9900);
+    const { data: order } = await request(t, '/api/orders', { ...buyer, method: 'POST', body: { productId: id } });
+    assert.equal((await request(t, '/api/orders/' + order.orderId + '/demo-complete', { ...buyer, method: 'POST', body: {} })).status, 200);
+
+    const draftRoute = '/api/seller/products/' + id + '/update';
+    const draft = (account, version) => request(t, draftRoute, { ...account, method: 'PUT', body: { version, releaseNotes: '修复启动问题' } });
+    assert.equal((await draft(other, '1.1.0')).status, 404);
+    assert.equal((await draft(seller, '1.0.0')).status, 409);
+    const created = await draft(seller, '1.1.0');
+    assert.equal(created.status, 201);
+    assert.equal((await draft(seller, '1.2.0')).status, 409);
+    const { id: updateId } = created.data;
+    const sellerRoute = '/api/seller/updates/' + updateId;
+    const adminRoute = '/api/admin/updates/' + updateId;
+    const download = '/api/my/library/' + id + '/download';
+    const putPackage = bytes => request(t, sellerRoute + '/file?filename=update.zip', {
+      ...seller, method: 'PUT', body: bytes, raw: true, headers: { 'Content-Type': 'application/octet-stream' }
+    });
+    const submit = () => request(t, sellerRoute + '/submit', { ...seller, method: 'POST', body: {} });
+    const overview = () => request(t, '/api/admin/overview', admin);
+    const review = (submissionId, decision, scanConfirmed = true) => request(t, adminRoute + '/review', {
+      ...admin, method: 'POST', body: { decision, scanConfirmed, submissionId, note: '人工审核记录' }
+    });
+    assert.equal((await submit()).status, 409);
+    const candidate = Buffer.from('candidate release to reject');
+    assert.equal((await putPackage(candidate)).status, 200);
+    assert.equal((await submit()).status, 200);
+    const first = (await overview()).data.updates[0];
+    const reviewFile = adminRoute + '/file?submission=' + first.submission_id;
+    assert.equal((await request(t, reviewFile, buyer)).status, 403);
+    assert.deepEqual((await request(t, reviewFile, admin)).data, candidate);
+    assert.deepEqual((await request(t, download, buyer)).data, fixture);
+    assert.equal((await request(t, '/api/products/' + id)).data.product.release_notes, '');
+    assert.equal((await putPackage(Buffer.from('cannot change while pending'))).status, 409);
+    assert.equal((await review(first.submission_id, 'reject')).status, 200);
+    assert.deepEqual((await request(t, download, buyer)).data, fixture);
+    assert.equal((await request(t, '/api/seller/overview', seller)).data.products[0].update.status, 'rejected');
+
+    const replacement = Buffer.from('manually approved replacement');
+    assert.equal((await putPackage(replacement)).status, 200);
+    assert.equal((await submit()).status, 200);
+    const second = (await overview()).data.updates[0];
+    assert.notEqual(second.submission_id, first.submission_id);
+    assert.equal((await request(t, reviewFile, admin)).status, 409);
+    assert.equal((await review(first.submission_id, 'approve')).status, 409);
+    assert.equal((await review(second.submission_id, 'approve', false)).status, 409);
+    assert.equal((await review(second.submission_id, 'approve')).status, 200);
+    const detail = (await request(t, '/api/products/' + id, buyer)).data.product;
+    assert.equal(detail.version, '1.1.0');
+    assert.equal(detail.release_notes, '修复启动问题');
+    assert.equal(detail.price_minor, 9900);
+    assert.equal(detail.has_access, true);
+    assert.deepEqual((await request(t, download, buyer)).data, replacement);
+    const library = (await request(t, '/api/my/library', buyer)).data;
+    assert.equal(library.products[0].version, '1.1.0');
+    assert.deepEqual(library.orders.map(o => o.id), [order.orderId]);
+    assert.equal((await draft(seller, '1.0.0')).status, 409);
+
+    const future = await draft(seller, '1.2.0');
+    assert.equal(future.status, 201);
+    const newRoute = '/api/seller/updates/' + future.data.id;
+    assert.equal((await request(t, newRoute + '/file?filename=next.zip', {
+      ...seller, method: 'PUT', body: candidate, raw: true, headers: { 'Content-Type': 'application/octet-stream' }
+    })).status, 200);
+    assert.equal((await request(t, newRoute + '/submit', { ...seller, method: 'POST' })).status, 200);
+    assert.equal((await request(t, '/api/admin/products/' + id + '/takedown', {
+      ...admin, method: 'POST', body: { reason: '紧急停止分发软件' }
+    })).status, 200);
+    assert.equal((await overview()).data.updates.length, 0);
+    assert.equal((await request(t, download, buyer)).status, 403);
+  } finally { await t.close(); }
+});
+
 test('demo checkout is explicit, owner-only, idempotent and excluded from real money balances', async () => {
   const t = await setup({ demoCheckout: true, demoCatalog: false });
   try {

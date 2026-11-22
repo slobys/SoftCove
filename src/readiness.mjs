@@ -15,6 +15,6 @@ export function deploymentReadiness(db, config) {
     { id: 'scanner', title: '软件包检查', status: 'manual',
       detail: config.clamavEnabled ? '已开启自动扫描开关；病毒库、扫描可用性和人工审核仍需维护。' : '未开启自动扫描。每次上架前需自行完成隔离扫描、签名和版权核验。' }
   ];
-  return { version: '0.3.0-beta.1', baseUrl: config.baseUrl, paymentMode, checks,
+  return { version: '0.3.0-beta.2', baseUrl: config.baseUrl, paymentMode, checks,
     notice: '这是配置与上架进度检查，不是商业上线认证。仍需完成支付联调、备份恢复演练和经营协议。' };
 }

@@ -61,7 +61,7 @@ main{flex:1}
 .dot:nth-child(3){background:#80d8bb}
 .spotlight-label{font-size:10px;margin-left:auto;color:#8caabf;letter-spacing:.9px}
 .spotlight-feature{background:linear-gradient(120deg,#29486f,#283068);border:1px solid rgba(165,198,230,.13);border-radius:16px;padding:20px;display:flex;gap:15px;align-items:center}
-.feature-icon{width:66px;height:66px;display:grid;place-items:center;background:linear-gradient(150deg,#afaaef,#5c67e3);font-size:38px;border-radius:16px;color:white;box-shadow:0 12px 26px rgba(46,26,117,.3);flex-shrink:0}
+.feature-icon{width:66px;height:66px;display:grid;place-items:center;background:linear-gradient(150deg,#afaaef,#5c67e3);font-size:38px;border-radius:16px;color:white;box-shadow:0 10px 20px rgba(0,0,0,.26);flex-shrink:0}
 .spotlight-feature small{font-size:10px;color:#b9c8e0;font-weight:700}
 .spotlight-feature strong{font-size:20px;display:block;line-height:1.45}
 .mini-tags{display:flex;gap:5px;margin-top:7px}
@@ -239,6 +239,10 @@ main{flex:1}
 .library-info p{font-size:11px;color:#94a0ae;margin:0}
 .library-item .btn{flex-shrink:0}
 .demo-site-notice{padding:12px 20px;background:#fff1cc;color:#694700;text-align:center;font-size:14px;line-height:1.7}
+.release-status{margin:8px 0 0;color:#526175;font-size:13px}
+.release-notes{white-space:pre-wrap;overflow-wrap:anywhere}
+.release-details{margin-top:6px;max-width:26ch;color:#34465b}
+.release-details summary{cursor:pointer;text-decoration:underline;text-underline-offset:3px}
 .deployment-checks{margin:0}
 .deployment-check{padding:15px 0;border-bottom:1px solid var(--line)}
 .deployment-check:first-child{padding-top:0}
@@ -257,7 +261,7 @@ main{flex:1}
 @keyframes pop{from{transform:translateY(10px);opacity:0}to{transform:translateY(0);opacity:1}}
 .boot{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;color:#3a4c63}
 .boot strong{font-size:27px}
-.boot span{font-size:12px;color:#a0afc0}
+.boot span{font-size:12px;color:#526175}
 .loader{width:34px;height:34px;border:3px solid #d7e8ee;border-top-color:#0fcab5;border-radius:50%;animation:spin .8s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 @media (max-width:1100px){.catalog-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.nav-links{margin-left:0;gap:16px}.spotlight{max-width:360px}.hero h1{font-size:44px}.container{padding:0 24px}}

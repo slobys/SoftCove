@@ -1,7 +1,7 @@
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { existsSync, readFileSync, createReadStream, createWriteStream, mkdirSync, renameSync, unlinkSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, createReadStream, createWriteStream, mkdirSync, renameSync, unlinkSync, openSync, fstatSync, closeSync } from 'node:fs';
 import { pipeline } from 'node:stream/promises';
 import { Transform } from 'node:stream';
 import { createHash, createHmac, timingSafeEqual, randomUUID } from 'node:crypto';
@@ -10,6 +10,7 @@ import { HttpError, fail, hashPassword, verifyPassword, getAuth, publicUser, cre
 import { scanPackage } from './src/scanner.mjs';
 import { loadConfig, loadEnvironment } from './src/config.mjs';
 import { deploymentReadiness } from './src/readiness.mjs';
+import { editableUpdate, openUpdatesForSeller, pendingUpdate, pendingUpdates, reviewUpdate, saveUpdate, submitUpdate } from './src/product-updates.mjs';
 
 const projectDir = path.dirname(fileURLToPath(import.meta.url));
 const staticFiles = {
@@ -84,7 +85,7 @@ function requireSellerProduct(db, auth, id) {
 }
 
 function checkEditState(product) {
-  if (!['draft', 'rejected'].includes(product.status)) fail(409, '该版本已进入审核或发布，不能直接修改，请新建商品版本');
+  if (!['draft', 'rejected'].includes(product.status)) fail(409, '此商品已送审或上线，请从工作台管理已上架版本');
 }
 
 function sendStoredPackage(res, dataDir, product) {
@@ -92,16 +93,28 @@ function sendStoredPackage(res, dataDir, product) {
   if (!key || !/^[a-f0-9-]{36}\.blob$/.test(key)) fail(404, '暂无可下载的软件包');
   const folder = path.resolve(dataDir, 'uploads');
   const target = path.resolve(folder, key);
-  if (path.dirname(target) !== folder || !existsSync(target)) fail(404, '软件包不存在');
+  if (path.dirname(target) !== folder) fail(404, '软件包不存在');
   const filename = String(product.file_name || 'software.zip').replace(/["\\\r\n]/g, '_');
-  res.writeHead(200, {
-    'Content-Type': 'application/octet-stream',
-    'Content-Disposition': "attachment; filename*=UTF-8''" + encodeURIComponent(filename),
-    'Content-Length': statSync(target).size,
-    'Cache-Control': 'private, no-store',
-    'X-Content-Type-Options': 'nosniff'
-  });
-  createReadStream(target).pipe(res);
+  const disposition = "attachment; filename*=UTF-8''" + encodeURIComponent(filename.toWellFormed());
+  let fd;
+  try { fd = openSync(target, 'r'); }
+  catch (error) {
+    if (error.code === 'ENOENT') fail(404, '软件包不存在');
+    throw error;
+  }
+  try {
+    res.writeHead(200, {
+      'Content-Type': 'application/octet-stream',
+      'Content-Disposition': disposition,
+      'Content-Length': fstatSync(fd).size,
+      'Cache-Control': 'private, no-store',
+      'X-Content-Type-Options': 'nosniff'
+    });
+    return pipeline(createReadStream(target, { fd }), res);
+  } catch (error) {
+    closeSync(fd);
+    throw error;
+  }
 }
 
 function getStripeSignature(body, header, secret) {
@@ -279,6 +292,55 @@ export function createApp(options = {}) {
   }
   const rateLimit = createRateLimiter(config);
 
+  function deletePackage(key) {
+    if (!key || !/^[a-f0-9-]{36}\.blob$/.test(key)) return;
+    try { unlinkSync(path.join(dataDir, 'uploads', key)); }
+    catch (error) { if (error.code !== 'ENOENT') console.error('无法清理替换后的软件包：', error.code); }
+  }
+
+  async function uploadPackage(req, res, auth, filename, id, isUpdate) {
+    const readTarget = isUpdate ? () => editableUpdate(db, auth.id, id) : () => {
+      const product = requireSellerProduct(db, auth, id);
+      checkEditState(product);
+      return product;
+    };
+    const before = readTarget();
+    const uploaded = await savePackage(req, dataDir, filename);
+    let scan;
+    try {
+      scan = await scanner(path.join(dataDir, 'uploads', uploaded.key), { enabled: clamavEnabled, command: clamavCommand });
+      if (!['quarantined', 'scan_passed', 'scan_failed', 'scan_error'].includes(scan?.status)) throw new Error('unknown scanner result');
+    } catch {
+      scan = { status: 'scan_error', detail: '扫描无法完成，禁止自动发布' };
+    }
+    const now = new Date().toISOString();
+    const detail = String(scan.detail || '').slice(0, 400);
+    try {
+      withTransaction(db, () => {
+        const current = readTarget();
+        if (current.file_key !== before.file_key ||
+            (isUpdate && (current.submission_id !== before.submission_id || current.version !== before.version))) {
+          fail(409, '软件包或版本已修改，请刷新后重试');
+        }
+        const liveBytes = summaryNumber(db, 'SELECT COALESCE(SUM(file_size),0) AS n FROM products WHERE seller_id=?', [auth.id]);
+        const updateBytes = summaryNumber(db, `SELECT COALESCE(SUM(r.file_size),0) AS n FROM product_updates r
+          JOIN products p ON p.id=r.product_id WHERE p.seller_id=?`, [auth.id]);
+        if (liveBytes + updateBytes - (current.file_size || 0) + uploaded.size > maxSellerStorageBytes) {
+          fail(413, '每个开发者的软件包总量不能超过 500 MiB');
+        }
+        const table = isUpdate ? 'product_updates' : 'products';
+        db.prepare(`UPDATE ${table} SET file_key=?,file_name=?,file_size=?,file_sha256=?,scan_status=?,
+          scan_detail=?,scanned_at=?,status='draft',review_note='',updated_at=? WHERE id=?`)
+          .run(uploaded.key, filename, uploaded.size, uploaded.sha256, scan.status, detail, now, now, id);
+      });
+    } catch (error) {
+      deletePackage(uploaded.key);
+      throw error;
+    }
+    deletePackage(before.file_key);
+    return json(res, 200, { file_name: filename, bytes: uploaded.size, sha256: uploaded.sha256, scan_status: scan.status, scan_detail: detail });
+  }
+
   async function dispatch(req, res) {
     securityHeaders(res);
     const url = new URL(req.url || '/', 'http://localhost');
@@ -288,7 +350,7 @@ export function createApp(options = {}) {
 
     if (pathname === '/api/health' && method === 'GET') {
       db.prepare('SELECT 1').get();
-      return json(res, 200, { ok: true, version: '0.3.0-beta.1' });
+      return json(res, 200, { ok: true, version: '0.3.0-beta.2' });
     }
     if (pathname === '/api/me' && method === 'GET') {
       return json(res, 200, {
@@ -356,7 +418,9 @@ export function createApp(options = {}) {
       const product = selectPublicProduct(db, productDetail[1], config.demoCatalog);
       if (!product) fail(404, '软件不存在');
       const hasAccess = auth ? Boolean(db.prepare('SELECT id FROM entitlements WHERE buyer_id=? AND product_id=?').get(auth.id, product.id)) : false;
-      return json(res, 200, { product: { ...publicProduct(product, true), has_access: hasAccess } });
+      const releaseNotes = db.prepare("SELECT release_notes FROM product_updates WHERE product_id=? AND version=? AND status='published'")
+        .get(product.id, product.version)?.release_notes || '';
+      return json(res, 200, { product: { ...publicProduct(product, true), release_notes: releaseNotes, has_access: hasAccess } });
     }
 
     const sellerDetail = pathname.match(/^\/api\/sellers\/([a-zA-Z0-9_-]+)$/);
@@ -389,9 +453,10 @@ export function createApp(options = {}) {
       const settlements = db.prepare('SELECT id,amount_minor,currency,method,external_reference,note,created_at FROM manual_settlements WHERE seller_id=? ORDER BY created_at DESC LIMIT 100').all(auth.id);
       const balance = sellerBalance(db, auth.id);
       const products = db.prepare('SELECT * FROM products WHERE seller_id=? AND is_demo=0 ORDER BY updated_at DESC').all(auth.id);
+      const updates = openUpdatesForSeller(db, auth.id);
       const orders = db.prepare("SELECT o.id,o.product_name,o.amount_minor,o.currency,o.platform_fee_minor,o.seller_due_minor,o.refunded_minor,o.status,o.paid_at,o.created_at,o.payment_provider FROM orders o WHERE o.seller_id=? AND o.status IN ('paid','free') ORDER BY o.created_at DESC LIMIT 50").all(auth.id);
       return json(res, 200, {
-        profile, settlements, products: products.map(sellerProduct), orders,
+        profile, settlements, products: products.map(product => ({ ...sellerProduct(product), update: updates.get(product.id) || null })), orders,
         stats: {
           published: products.filter(p => p.status === 'published').length,
           pending: products.filter(p => p.status === 'pending').length,
@@ -419,50 +484,41 @@ export function createApp(options = {}) {
     if (sellerProductPath && method === 'PATCH') {
       checkMutation(req, auth, baseUrl);
       requireAuth(auth, ['seller']);
-      const prior = requireSellerProduct(db, auth, sellerProductPath[1]);
-      checkEditState(prior);
       const body = await readJSON(req);
       const p = validateProduct(body, currency);
-      db.prepare("UPDATE products SET name=?,tagline=?,description=?,category=?,platforms=?,version=?,price_minor=?,icon=?,accent=?,status='draft',review_note='',updated_at=? WHERE id=?")
-        .run(p.name, p.tagline, p.description, p.category, p.platforms, p.version, p.price, p.icon, p.accent, new Date().toISOString(), prior.id);
+      withTransaction(db, () => {
+        const prior = requireSellerProduct(db, auth, sellerProductPath[1]);
+        checkEditState(prior);
+        db.prepare("UPDATE products SET name=?,tagline=?,description=?,category=?,platforms=?,version=?,price_minor=?,icon=?,accent=?,status='draft',review_note='',updated_at=? WHERE id=?")
+          .run(p.name, p.tagline, p.description, p.category, p.platforms, p.version, p.price, p.icon, p.accent, new Date().toISOString(), prior.id);
+      });
       return json(res, 200, { ok: true });
     }
 
     const sellerFilePath = pathname.match(/^\/api\/seller\/products\/([a-zA-Z0-9_-]+)\/file$/);
-    if (sellerFilePath && method === 'PUT') {
+    const updateFilePath = pathname.match(/^\/api\/seller\/updates\/([a-zA-Z0-9_-]+)\/file$/);
+    if ((sellerFilePath || updateFilePath) && method === 'PUT') {
       checkMutation(req, auth, baseUrl);
       requireAuth(auth, ['seller']);
       rateLimit(req, 'upload', 40, 60 * 60 * 1000);
-      const product = requireSellerProduct(db, auth, sellerFilePath[1]);
-      checkEditState(product);
       const filename = safeFilename(url.searchParams.get('filename'));
-      const uploaded = await savePackage(req, dataDir, filename);
-      let scanResult;
-      try {
-        scanResult = await scanner(path.join(dataDir,'uploads',uploaded.key), {enabled:clamavEnabled,command:clamavCommand});
-        if (!['quarantined','scan_passed','scan_failed','scan_error'].includes(scanResult?.status)) throw new Error('unknown scanner result');
-      } catch {
-        scanResult = {status:'scan_error', detail:'扫描无法完成，禁止自动发布'};
-      }
-      const scanTime = new Date().toISOString();
-      try {
-        withTransaction(db, () => {
-          const current = requireSellerProduct(db, auth, product.id);
-          checkEditState(current);
-          if (current.file_key !== product.file_key) fail(409, '商品文件正在被其他上传任务修改，请重试');
-          const used = summaryNumber(db, 'SELECT COALESCE(SUM(file_size),0) AS n FROM products WHERE seller_id=?', [auth.id]);
-          if (used - (current.file_size || 0) + uploaded.size > maxSellerStorageBytes) fail(413, '每个开发者的软件包总量不能超过 500 MiB');
-          db.prepare("UPDATE products SET file_key=?,file_name=?,file_size=?,file_sha256=?,scan_status=?,scan_detail=?,scanned_at=?,status='draft',review_note='',updated_at=? WHERE id=?")
-            .run(uploaded.key,filename,uploaded.size,uploaded.sha256,scanResult.status,String(scanResult.detail || '').slice(0,400),scanTime,scanTime,product.id);
-        });
-      } catch (error) {
-        try { unlinkSync(path.join(dataDir, 'uploads', uploaded.key)); } catch {}
-        throw error;
-      }
-      if (product.file_key) {
-        try { unlinkSync(path.join(dataDir, 'uploads', product.file_key)); } catch {}
-      }
-      return json(res, 200, { file_name:filename, bytes:uploaded.size, sha256:uploaded.sha256, scan_status:scanResult.status, scan_detail:scanResult.detail });
+      return uploadPackage(req, res, auth, filename, (sellerFilePath || updateFilePath)[1], Boolean(updateFilePath));
+    }
+
+    const sellerUpdate = pathname.match(/^\/api\/seller\/products\/([a-zA-Z0-9_-]+)\/update$/);
+    if (sellerUpdate && method === 'PUT') {
+      checkMutation(req, auth, baseUrl);
+      requireAuth(auth, ['seller']);
+      const result = saveUpdate(db, auth.id, sellerUpdate[1], await readJSON(req));
+      return json(res, result.created ? 201 : 200, { id: result.id });
+    }
+
+    const submitSoftwareUpdate = pathname.match(/^\/api\/seller\/updates\/([a-zA-Z0-9_-]+)\/submit$/);
+    if (submitSoftwareUpdate && method === 'POST') {
+      checkMutation(req, auth, baseUrl);
+      requireAuth(auth, ['seller']);
+      submitUpdate(db, auth.id, submitSoftwareUpdate[1], clamavEnabled);
+      return json(res, 200, { status: 'pending' });
     }
 
     const sellerSubmit = pathname.match(/^\/api\/seller\/products\/([a-zA-Z0-9_-]+)\/submit$/);
@@ -481,17 +537,18 @@ export function createApp(options = {}) {
     if (pathname === '/api/admin/overview' && method === 'GET') {
       requireAuth(auth, ['admin']);
       const products = db.prepare("SELECT p.*,u.name AS seller_name FROM products p JOIN users u ON p.seller_id=u.id WHERE p.is_demo=0 ORDER BY CASE WHEN p.status='pending' THEN 0 ELSE 1 END,p.updated_at DESC LIMIT 150").all();
+      const updates = pendingUpdates(db);
       const orders = db.prepare("SELECT o.*,u.email AS buyer_email,s.name AS seller_name FROM orders o JOIN users u ON o.buyer_id=u.id JOIN users s ON o.seller_id=s.id ORDER BY o.created_at DESC LIMIT 100").all();
       const sellers = db.prepare("SELECT id,email,name,seller_status,seller_bio,seller_website,seller_review_note,created_at FROM users WHERE role='seller' AND id!='softcove-demo-studio' ORDER BY CASE WHEN seller_status='pending' THEN 0 ELSE 1 END,created_at DESC LIMIT 150").all().map(row => ({...row, ...sellerBalance(db,row.id)}));
       const settlements = db.prepare("SELECT m.id,m.amount_minor,m.currency,m.method,m.external_reference,m.note,m.created_at,u.name AS seller_name FROM manual_settlements m JOIN users u ON u.id=m.seller_id ORDER BY m.created_at DESC LIMIT 100").all();
       return json(res, 200, {
-        products:products.map(sellerProduct),orders,sellers,settlements,
+        products:products.map(sellerProduct),updates,orders,sellers,settlements,
         deployment: deploymentReadiness(db, config),
         stats: {
           sellers: summaryNumber(db, "SELECT COUNT(*) AS n FROM users WHERE role='seller' AND id!='softcove-demo-studio'"),
           sellers_pending: summaryNumber(db, "SELECT COUNT(*) AS n FROM users WHERE role='seller' AND seller_status='pending'"),
           manual_settled_minor: summaryNumber(db, 'SELECT COALESCE(SUM(amount_minor),0) AS n FROM manual_settlements'),
-          pending: summaryNumber(db, "SELECT COUNT(*) AS n FROM products WHERE status='pending'"),
+          pending: summaryNumber(db, "SELECT (SELECT COUNT(*) FROM products WHERE status='pending') + (SELECT COUNT(*) FROM product_updates WHERE status='pending') AS n"),
           orders_paid: summaryNumber(db, "SELECT COUNT(*) AS n FROM orders WHERE status='paid' AND payment_provider!='demo'"),
           gross_minor: summaryNumber(db, "SELECT COALESCE(SUM(amount_minor),0) AS n FROM orders WHERE status='paid' AND payment_provider!='demo'"),
           fees_minor: summaryNumber(db, "SELECT COALESCE(SUM(platform_fee_minor),0) AS n FROM orders WHERE status='paid' AND payment_provider!='demo'")
@@ -588,6 +645,8 @@ export function createApp(options = {}) {
         const now = new Date().toISOString();
         db.prepare("UPDATE products SET status='archived',scan_status='quarantined',review_note=?,reviewed_by=?,reviewed_at=?,updated_at=? WHERE id=?")
           .run(note, auth.id, now, now, product.id);
+        db.prepare("UPDATE product_updates SET status='cancelled',review_note=?,updated_at=? WHERE product_id=? AND status IN ('draft','pending','rejected')")
+          .run(note, now, product.id);
         db.prepare('INSERT INTO moderation_log (id,product_id,admin_id,decision,note,scan_confirmed,created_at) VALUES (?,?,?,?,?,?,?)')
           .run(uid('review_'), product.id, auth.id, 'takedown', note, 0, now);
       });
@@ -600,6 +659,24 @@ export function createApp(options = {}) {
       const product = db.prepare('SELECT * FROM products WHERE id=? AND is_demo=0').get(adminFile[1]);
       if (!product) fail(404, '商品不存在');
       return sendStoredPackage(res, dataDir, product);
+    }
+
+    const adminUpdateFile = pathname.match(/^\/api\/admin\/updates\/([a-zA-Z0-9_-]+)\/file$/);
+    if (adminUpdateFile && method === 'GET') {
+      requireAuth(auth, ['admin']);
+      const update = pendingUpdate(db, adminUpdateFile[1]);
+      if (url.searchParams.get('submission') !== update.submission_id) fail(409, '请刷新审核队列后下载本次提交的软件包');
+      return sendStoredPackage(res, dataDir, update);
+    }
+
+    const adminUpdateReview = pathname.match(/^\/api\/admin\/updates\/([a-zA-Z0-9_-]+)\/review$/);
+    if (adminUpdateReview && method === 'POST') {
+      checkMutation(req, auth, baseUrl);
+      requireAuth(auth, ['admin']);
+      const body = await readJSON(req);
+      const result = reviewUpdate(db, auth.id, adminUpdateReview[1], body, clamavEnabled);
+      deletePackage(result.replacedKey);
+      return json(res, 200, { status: result.status });
     }
 
     if (pathname === '/api/orders' && method === 'POST') {

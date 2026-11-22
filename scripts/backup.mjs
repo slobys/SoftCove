@@ -12,6 +12,13 @@ function regularFile(filename) {
   if (!lstatSync(filename).isFile()) throw new Error('备份只接受普通文件');
 }
 
+function referencedPackages(db) {
+  const products = 'SELECT DISTINCT file_key,file_sha256 FROM products WHERE file_key IS NOT NULL';
+  const hasUpdates = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='product_updates'").get();
+  const updates = 'SELECT file_key,file_sha256 FROM product_updates WHERE file_key IS NOT NULL';
+  return db.prepare(hasUpdates ? products + ' UNION ' + updates : products).all();
+}
+
 function verifySnapshot(folder) {
   const manifest = JSON.parse(readFileSync(path.join(folder, 'manifest.json'), 'utf8'));
   if (manifest.format !== 'softcove-backup-v1' || !Array.isArray(manifest.files) || !/^[a-f0-9]{64}$/.test(manifest.database_sha256)) throw new Error('备份清单格式无效');
@@ -29,7 +36,7 @@ function verifySnapshot(folder) {
   const db = new DatabaseSync(database, { readOnly: true });
   try {
     if (db.prepare('PRAGMA integrity_check').get().integrity_check !== 'ok') throw new Error('备份数据库完整性检查失败');
-    for (const product of db.prepare('SELECT file_key,file_sha256 FROM products WHERE file_key IS NOT NULL').all()) {
+    for (const product of referencedPackages(db)) {
       if (!manifest.files.some(file => file.key === product.file_key && file.sha256 === product.file_sha256)) throw new Error('备份缺少数据库引用的软件包');
     }
   } finally { db.close(); }
@@ -55,7 +62,7 @@ export function createBackup(dataDir, destination) {
     mkdirSync(path.join(staging, 'uploads'), { mode: 0o700 });
     const snapshot = new DatabaseSync(path.join(staging, 'marketplace.db'), { readOnly: true });
     let products;
-    try { products = snapshot.prepare('SELECT DISTINCT file_key,file_sha256 FROM products WHERE file_key IS NOT NULL').all(); }
+    try { products = referencedPackages(snapshot); }
     finally { snapshot.close(); }
     const files = products.map(product => {
       if (!validKey(product.file_key)) throw new Error('软件包存储键无效，拒绝备份');

@@ -58,6 +58,13 @@ try {
   const library = (await api('/api/my/library', { auth: buyer })).data;
   const downloadRoute = '/api/my/library/' + library.products[0].id + '/download';
   assert.deepEqual((await api(downloadRoute, { auth: buyer })).data, fixture);
+  const update = (await api('/api/seller/products/' + id + '/update', {
+    method: 'PUT', auth: seller, body: { version: '1.1.0', releaseNotes: '验证在售软件更新和恢复。' }
+  })).data;
+  const updatedFixture = Buffer.from('softcove smoke test version 1.1.0');
+  const updateRoute = '/api/seller/updates/' + update.id;
+  await api(updateRoute + '/file?filename=update.zip', { method: 'PUT', auth: seller, body: updatedFixture, binary: true });
+  await api(updateRoute + '/submit', { method: 'POST', auth: seller });
   call(['up', '-d', '--force-recreate', '--wait', '--wait-timeout', '90']);
   root = 'http://' + call(['port', 'softcove', '3100']);
   assert.deepEqual((await api(downloadRoute, { auth: buyer })).data, fixture);
@@ -74,7 +81,15 @@ try {
   assert.equal((await api('/api/me', { auth: buyer })).data.user, null);
   const restoredBuyer = await api('/api/auth/login', { method: 'POST', body: { email: 'buyer@test.example', password } });
   assert.deepEqual((await api(downloadRoute, { auth: restoredBuyer })).data, fixture);
-  console.log('Docker 验收通过：上架 → 演示下单 → 模拟付款 → 私有下载 → 重建保留数据 → 备份 → 新卷恢复 → 重新登录下载。');
+  const restoredAdmin = await api('/api/auth/login', { method: 'POST', body: { email: 'admin@test.example', password } });
+  const restoredUpdate = (await api('/api/admin/overview', { auth: restoredAdmin })).data.updates[0];
+  const reviewRoute = '/api/admin/updates/' + restoredUpdate.id;
+  const submissionId = restoredUpdate.submission_id;
+  assert.deepEqual((await api(reviewRoute + '/file?submission=' + submissionId, { auth: restoredAdmin })).data, updatedFixture);
+  await api(reviewRoute + '/review', { method: 'POST', auth: restoredAdmin, body: { decision: 'approve', submissionId, scanConfirmed: true } });
+  assert.deepEqual((await api(downloadRoute, { auth: restoredBuyer })).data, updatedFixture);
+  assert.equal((await api('/api/my/library', { auth: restoredBuyer })).data.orders[0].id, order.data.orderId);
+  console.log('Docker 验收通过：模拟购买 → 送审新版 → 重建和恢复 → 审核新版 → 原订单授权下载更新。');
 } finally {
   for (const name of [project, recoveredProject]) {
     spawnSync('docker', [...compose(name), 'down', '-v', '--remove-orphans', '--rmi', 'local'], { cwd: projectDir, env, encoding: 'utf8', timeout: 60000 });
